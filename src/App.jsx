@@ -5,7 +5,11 @@ import Signup from './pages/Signup'
 import Chat from './pages/Chat'
 
 function App() {
-  const [page, setPage] = useState('login')
+  // Check if user is already logged in (has a token in localStorage)
+  const [page, setPage] = useState(() => {
+    const token = localStorage.getItem('token')
+    return token ? 'chat' : 'login'
+  })
 
   const handleLogout = () => {
     localStorage.removeItem('token')

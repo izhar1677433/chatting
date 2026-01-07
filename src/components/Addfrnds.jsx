@@ -7,6 +7,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
   const [error, setError] = useState(null)
   const [successMessage, setSuccessMessage] = useState('')
   const [incomingRequests, setIncomingRequests] = useState([])
+  const [justAccepted, setJustAccepted] = useState(new Set()) // Track recently accepted users
 
   const token = localStorage.getItem('token')
 
@@ -230,6 +231,15 @@ export default function AddFriends({ onFriendAdded, socket }) {
         // mark as friend in results and remove incoming flag
         setResults(prev => prev.map(u => (String(u._id) === String(requesterId) ? { ...u, isFriend: true, isRequested: false } : u)))
         setIncomingRequests(prev => prev.filter(id => id !== String(requesterId)))
+        // Mark as just accepted for temporary "Accepted" display
+        setJustAccepted(prev => new Set(prev).add(String(requesterId)))
+        setTimeout(() => {
+          setJustAccepted(prev => {
+            const next = new Set(prev)
+            next.delete(String(requesterId))
+            return next
+          })
+        }, 3000)
         if (onFriendAdded) onFriendAdded()
         setSuccessMessage('Friend request accepted')
         setTimeout(() => setSuccessMessage(''), 3000)
@@ -283,7 +293,11 @@ export default function AddFriends({ onFriendAdded, socket }) {
               </div>
             </div>
             <div className="ml-2 flex-shrink-0">
-              {user.isFriend ? (
+              {justAccepted.has(String(user._id)) ? (
+                <span className="bg-green-500 text-white px-3 py-1.5 rounded-md text-xs font-medium animate-pulse">
+                  ✓ Accepted
+                </span>
+              ) : user.isFriend ? (
                 <span className="bg-gray-300 text-gray-700 px-3 py-1.5 rounded-md text-xs font-medium cursor-not-allowed">
                   Already Friends
                 </span>

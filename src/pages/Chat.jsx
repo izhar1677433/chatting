@@ -20,6 +20,18 @@ export default function Chat({ onLogout }) {
   const [currentUserName, setCurrentUserName] = useState('')
   const messagesEndRef = useRef(null)
   const [socket, setSocket] = useState(null)
+  const [socketConnected, setSocketConnected] = useState(false)
+
+  // parsed token fallback (quick id/name extraction without server call)
+  const parseJwt = t => {
+    try {
+      if (!t) return null
+      const part = t.split('.')[1]
+      if (!part) return null
+      const decoded = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')))
+      return decoded
+    } catch (e) { return null }
+  }
 
   // refs for latest values inside socket handlers (avoid re-registering)
   const selectedFriendRef = useRef(selectedFriend)
@@ -32,26 +44,59 @@ export default function Chat({ onLogout }) {
 
   /* --------------------------  SOCKET INIT  --------------------------- */
   useEffect(() => {
-    if (!currentUserId) return
+    // Connect socket as soon as we have a token (don't wait for fetch from /me)
+    if (!token) return
     const s = io(SOCKET_URL, { auth: { token } })
 
-    const onConnect = () => s.emit('register', { token })
-    const onReg = () => console.log('Socket registered', s.id)
-    const onErr = err => console.error('Socket connect_error', err)
+    const onConnect = () => {
+      console.log('socket connected, emitting register')
+      s.emit('register', { token })
+      setSocketConnected(true)
+    }
+    const onReg = () => { console.log('Socket registered', s.id); setSocketConnected(true) }
+    const onErr = err => { console.error('Socket connect_error', err); setSocketConnected(false) }
+    const onDisconnect = () => { console.log('socket disconnected'); setSocketConnected(false) }
 
     s.on('connect', onConnect)
     s.on('registered', onReg)
     s.on('connect_error', onErr)
+    s.on('disconnect', onDisconnect)
     setSocket(s)
 
     return () => {
       s.off('connect', onConnect)
       s.off('registered', onReg)
       s.off('connect_error', onErr)
+      s.off('disconnect', onDisconnect)
       s.disconnect()
       setSocket(null)
     }
-  }, [currentUserId])
+  }, [token])
+
+  // When socket registers, refresh friends to pick up latest online statuses
+  useEffect(() => {
+    if (!socket) return
+    const onRegistered = () => {
+      console.log('Socket registered (client) - refreshing friends')
+      fetchFriends()
+      // Sometimes server-side friend notifications arrive slightly after registration;
+      // fetch again shortly after to avoid race where friends remain offline.
+      setTimeout(() => {
+        console.log('Socket registered - second refresh for friends')
+        fetchFriends()
+      }, 500)
+    }
+    socket.on('registered', onRegistered)
+    return () => socket.off('registered', onRegistered)
+  }, [socket])
+
+  // Also refresh friends whenever socket becomes connected (robust fallback)
+  useEffect(() => {
+    if (socketConnected) {
+      console.log('Socket connected => refreshing friends')
+      fetchFriends()
+    }
+  }, [socketConnected])
 
   /* --------------------------  CURRENT USER  -------------------------- */
   useEffect(() => {
@@ -72,6 +117,18 @@ export default function Chat({ onLogout }) {
     fetchCurrentUser()
   }, [token])
 
+  // quick client-side token decode to get id/name immediately (non-verified)
+  useEffect(() => {
+    if (!token) return
+    try {
+      const payload = parseJwt(token)
+      const id = payload && (payload.id || payload._id)
+      const name = payload && (payload.name || payload.username)
+      if (id && !currentUserId) setCurrentUserId(id)
+      if (name && !currentUserName) setCurrentUserName(name)
+    } catch (e) { /* ignore */ }
+  }, [token])
+
   /* ---------------------------  FRIENDS  ------------------------------ */
   const fetchFriends = async () => {
     setFriendsLoading(true)
@@ -87,27 +144,44 @@ export default function Chat({ onLogout }) {
       else if (Array.isArray(data.data)) list = data.data
       else if (Array.isArray(data.users)) list = data.users
 
-      let statusMap = {}
+      // Build a set of online friend IDs from the status endpoint (accept many shapes)
+      const onlineSet = new Set()
       try {
         const sRes = await fetch(`${SOCKET_URL}/api/online/friends-status`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         const sData = await sRes.json()
-        if (Array.isArray(sData.friends))
-          statusMap = sData.friends.reduce((acc, f) => ({ ...acc, [String(f.id)]: !!f.online }), {})
-      } catch { }
+        console.log('DEBUG /api/online/friends-status response:', sData)
+        const arr = Array.isArray(sData)
+          ? sData
+          : Array.isArray(sData.friends)
+            ? sData.friends
+            : Array.isArray(sData.data)
+              ? sData.data
+              : []
+        arr.forEach(item => {
+          if (!item) return
+          const ids = [item.id, item._id, item.userId, item.user_id]
+          if (item.user && typeof item.user === 'object') ids.push(item.user.id, item.user._id)
+          ids.forEach(i => { if (i !== undefined && i !== null) onlineSet.add(String(i)) })
+        })
+      } catch (e) {
+        console.warn('Failed to fetch online/friends-status', e)
+      }
 
       const formatted = list.map(f => {
         const u = f.user || f.friend || f
+        const fid = String(u._id || u.id)
         return {
-          _id: u._id || u.id,
+          _id: fid,
           name: u.name || u.username || 'Unknown',
           email: u.email,
           lastMessage: f.lastMessage || f.last_message,
           unreadCount: f.unreadCount || f.unread_count || 0,
-          online: !!statusMap[String(u._id || u.id)],
+          online: onlineSet.has(fid),
         }
       })
+      console.log('DEBUG formatted friends:', formatted, 'onlineSet:', Array.from(onlineSet))
       setFriends(formatted)
     } catch {
       setFriends([])
@@ -126,11 +200,17 @@ export default function Chat({ onLogout }) {
         headers: { Authorization: `Bearer ${token}` },
       })
       const data = await res.json()
+      const normalizeId = v => {
+        if (!v) return undefined
+        if (typeof v === 'string') return v
+        if (typeof v === 'object') return String(v._id || v.id || v)
+        return String(v)
+      }
       const msgs = (data.messages || data.data || data || []).map(m => ({
         _id: m._id,
         text: m.text || m.content,
-        sender: m.sender || m.senderId || m.sender_id,
-        receiver: m.receiver || m.receiverId || m.receiver_id || m.to,
+        sender: normalizeId(m.sender || m.senderId || m.sender_id),
+        receiver: normalizeId(m.receiver || m.receiverId || m.receiver_id || m.to),
         createdAt: m.createdAt || m.created_at || m.timestamp,
       }))
       setMessages(Array.from(new Map(msgs.map(m => [m._id, m])).values()))
@@ -149,12 +229,20 @@ export default function Chat({ onLogout }) {
     const handler = msg => {
       console.log('🔔 Received newMessage event:', msg)
       if (!msg) return
+
+      const normalizeId = v => {
+        if (!v && v !== 0) return undefined
+        if (typeof v === 'string') return v
+        if (typeof v === 'object') return String(v._id || v.id || v)
+        return String(v)
+      }
+
       const norm = {
-        _id: msg._id || msg.id || Date.now().toString(),
-        clientTempId: msg.clientTempId || msg.client_temp_id || msg.tempId,
+        _id: normalizeId(msg._id || msg.id) || Date.now().toString(),
+        clientTempId: normalizeId(msg.clientTempId || msg.client_temp_id || msg.tempId),
         text: msg.text || msg.content || '',
-        sender: msg.sender || msg.senderId || msg.sender_id,
-        receiver: msg.receiver || msg.receiverId || msg.receiver_id || msg.to,
+        sender: normalizeId(msg.sender || msg.senderId || msg.sender_id),
+        receiver: normalizeId(msg.receiver || msg.receiverId || msg.receiver_id || msg.to),
         createdAt: msg.createdAt || msg.created_at || msg.timestamp || new Date().toISOString(),
       }
 
@@ -164,8 +252,7 @@ export default function Chat({ onLogout }) {
 
       console.log('🔍 Checking message:', { me, sender: sid, receiver: rid, text: norm.text })
 
-      // ✅ FILTER: Only process messages where current user is sender OR receiver
-      if (!me || (String(sid) !== me && String(rid) !== me)) {
+      if (!me || (sid !== me && rid !== me)) {
         console.log('⚠️ Ignoring message not for me:', { sender: sid, receiver: rid, me })
         return
       }
@@ -176,26 +263,68 @@ export default function Chat({ onLogout }) {
       const open = selectedFriendRef.current
       if (open && friendId && String(open._id) === String(friendId)) {
         console.log('💬 Adding to open chat with:', open.name)
-        // belongs to open thread: reconcile / append
         setMessages(prev => {
-          if (prev.some(m => m._id === norm._id)) {
-            if (norm.clientTempId) return prev.filter(m => m._id !== norm.clientTempId)
+          const prevIds = new Set(prev.map(m => String(m._id)))
+          if (prevIds.has(String(norm._id))) {
+            if (norm.clientTempId) {
+              return prev.map(m => (String(m._id) === String(norm.clientTempId) ? { ...m, ...norm, _id: norm._id } : m))
+            }
             return prev
           }
-          if (norm.clientTempId) return prev.map(m => m._id === norm.clientTempId ? { ...m, ...norm } : m)
-          return [...prev, norm]
+
+          if (norm.clientTempId && prevIds.has(String(norm.clientTempId))) {
+            return prev.map(m => (String(m._id) === String(norm.clientTempId) ? { ...m, ...norm, _id: norm._id } : m))
+          }
+
+          const next = [...prev, norm]
+          console.log('🔁 Messages: prevLength=', prev.length, 'nextLength=', next.length)
+          return next
         })
       } else {
         console.log('📬 Updating friend list for:', friendId)
-        // not open: mark friend with lastMessage + unread bump
         if (friendId) {
-          setFriends(prev => prev.map(f => f._id && String(f._id) === String(friendId) ? { ...f, lastMessage: { text: norm.text, createdAt: norm.createdAt }, unreadCount: (f.unreadCount || 0) + 1 } : f))
+          setFriends(prev => prev.map(f => (String(f._id) === String(friendId) ? { ...f, lastMessage: { text: norm.text, createdAt: norm.createdAt }, unreadCount: (f.unreadCount || 0) + 1 } : f)))
         }
       }
     }
 
+    const onlineStatusHandler = data => {
+      console.log('🟢 Friend online status changed:', data)
+      if (!data) return
+      const rawId = data.userId ?? data.id ?? data._id ?? (data.user && (data.user._id || data.user.id))
+      if (rawId == null) {
+        console.log('⚠️ No userId found in friendOnlineStatus event')
+        return
+      }
+      const friendId = String(rawId)
+      const isOnline = !!(data.online ?? data.isOnline ?? data.status)
+
+      console.log(`🟢 Processing: friendId=${friendId}, isOnline=${isOnline}`)
+
+      // Update friend's online status in the list
+      setFriends(prev => {
+        const updated = prev.map(f => (String(f._id) === friendId ? { ...f, online: isOnline } : f))
+        const friend = updated.find(f => String(f._id) === friendId)
+        console.log(`🟢 Updated friends - ${friend?.name || friendId}: ${isOnline ? 'ONLINE' : 'OFFLINE'}`)
+        return updated
+      })
+
+      // Also update selectedFriend if it's the same person
+      setSelectedFriend(prev => {
+        if (prev && String(prev._id) === friendId) {
+          console.log(`🟢 Updating selectedFriend ${prev.name} online status to:`, isOnline)
+          return { ...prev, online: isOnline }
+        }
+        return prev
+      })
+    }
+
     socket.on('newMessage', handler)
-    return () => socket.off('newMessage', handler)
+    socket.on('friendOnlineStatus', onlineStatusHandler)
+    return () => {
+      socket.off('newMessage', handler)
+      socket.off('friendOnlineStatus', onlineStatusHandler)
+    }
   }, [socket])
 
   /* --------------------------  SCROLL  -------------------------------- */
@@ -227,8 +356,16 @@ export default function Chat({ onLogout }) {
     setMessages(prev => (prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]))
 
     /* Send via Socket.IO only (handles both DB + real-time emit) */
+    if (!socketConnected) {
+      setError('Socket not connected yet. Please wait a moment.')
+      setLoading(false)
+      return
+    }
     if (socket?.connected) {
-      socket.emit('sendMessage', { to: String(receiverId), text: newMessage, clientTempId: tempId }, ack => {
+      const payload = { to: String(receiverId), text: newMessage, clientTempId: tempId }
+      console.log('📤 Emitting sendMessage with payload:', payload)
+      socket.emit('sendMessage', payload, ack => {
+        console.log('📨 sendMessage ack:', ack)
         if (ack?.ok && ack.data) {
           setMessages(prev => {
             if (prev.some(m => m._id === ack.data._id)) return prev.filter(m => m._id !== tempId)
@@ -278,6 +415,35 @@ export default function Chat({ onLogout }) {
     return groups
   }
 
+
+  // Sync selectedFriend.online when friends list updates
+  useEffect(() => {
+    if (selectedFriend && friends && friends.length) {
+      const found = friends.find(f => String(f._id) === String(selectedFriend._id))
+      console.log('🔄 Sync check - selectedFriend:', selectedFriend.name, 'online:', selectedFriend.online, '| found in list:', found?.online)
+      if (found && found.online !== selectedFriend.online) {
+        console.log('🔄 SYNCING selectedFriend.online from', selectedFriend.online, 'to', found.online)
+        setSelectedFriend(prev => ({ ...prev, online: found.online }))
+      }
+    }
+  }, [friends, selectedFriend])
+
+  // Debug logging for messages
+  useEffect(() => {
+    const test = groupMessagesByDate()
+    console.log('TEST groupMessagesByDate result:', test)
+    console.log('Current selectedFriend:', selectedFriend)
+    console.log('Current messages:', messages)
+  }, [messages, groupMessagesByDate])
+
+  // Debug logging for friends online status
+  useEffect(() => {
+    console.log('📋 Friends list updated:')
+    friends.forEach(f => {
+      console.log(`  - ${f.name}: ${f.online ? '🟢 ONLINE' : '⚪ OFFLINE'}`)
+    })
+  }, [friends])
+
   /* ---------------------------  RENDER  ------------------------------- */
   return (
     <div className="flex h-screen w-screen bg-gray-100 overflow-hidden">
@@ -291,8 +457,8 @@ export default function Chat({ onLogout }) {
             <div className="flex-1 min-w-0">
               <h3 className="font-semibold truncate">{currentUserName}</h3>
               <div className="flex items-center space-x-1.5">
-                <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                <span className="text-xs text-green-200">Online</span>
+                <span className={`w-2 h-2 rounded-full ${socketConnected ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`} />
+                <span className={`text-xs ${socketConnected ? 'text-green-200' : 'text-gray-400'}`}>{socketConnected ? 'Online' : 'Offline'}</span>
               </div>
             </div>
           </div>
@@ -364,8 +530,14 @@ export default function Chat({ onLogout }) {
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center text-white font-bold">
                   {selectedFriend.name.charAt(0).toUpperCase()}
                 </div>
-                <div>
-                  <h2 className="font-semibold text-lg text-gray-900">{selectedFriend.name}</h2>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center space-x-2">
+                    <h2 className="font-semibold text-lg text-gray-900">{selectedFriend.name}</h2>
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full border-2 border-white ${selectedFriend.online ? 'bg-green-400' : 'bg-gray-400'}`}
+                      title={selectedFriend.online ? 'Online' : 'Offline'}
+                    />
+                  </div>
                   <p className="text-xs text-gray-500">{selectedFriend.email}</p>
                 </div>
               </div>
@@ -427,7 +599,7 @@ export default function Chat({ onLogout }) {
                 />
                 <button
                   type="submit"
-                  disabled={loading || !newMessage.trim()}
+                  disabled={loading || !newMessage.trim() || !socketConnected}
                   className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white px-6 py-3 rounded-full font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
                 >
                   {loading ? 'Sending...' : 'Send'}
