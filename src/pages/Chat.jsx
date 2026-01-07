@@ -73,30 +73,8 @@ export default function Chat({ onLogout }) {
     }
   }, [token])
 
-  // When socket registers, refresh friends to pick up latest online statuses
-  useEffect(() => {
-    if (!socket) return
-    const onRegistered = () => {
-      console.log('Socket registered (client) - refreshing friends')
-      fetchFriends()
-      // Sometimes server-side friend notifications arrive slightly after registration;
-      // fetch again shortly after to avoid race where friends remain offline.
-      setTimeout(() => {
-        console.log('Socket registered - second refresh for friends')
-        fetchFriends()
-      }, 500)
-    }
-    socket.on('registered', onRegistered)
-    return () => socket.off('registered', onRegistered)
-  }, [socket])
-
-  // Also refresh friends whenever socket becomes connected (robust fallback)
-  useEffect(() => {
-    if (socketConnected) {
-      console.log('Socket connected => refreshing friends')
-      fetchFriends()
-    }
-  }, [socketConnected])
+  // Socket will automatically update online status via online-users broadcast
+  // No need to re-fetch friends on socket connect
 
   /* --------------------------  CURRENT USER  -------------------------- */
   useEffect(() => {
@@ -129,6 +107,13 @@ export default function Chat({ onLogout }) {
     } catch (e) { /* ignore */ }
   }, [token])
 
+  // Emit user-online when currentUserId becomes available
+  useEffect(() => {
+    if (!currentUserId || !socket?.connected) return
+    console.log('📢 Emitting user-online for:', currentUserId)
+    socket.emit('user-online', currentUserId)
+  }, [currentUserId, socket?.connected])
+
   /* ---------------------------  FRIENDS  ------------------------------ */
   const fetchFriends = async () => {
     setFriendsLoading(true)
@@ -144,31 +129,6 @@ export default function Chat({ onLogout }) {
       else if (Array.isArray(data.data)) list = data.data
       else if (Array.isArray(data.users)) list = data.users
 
-      // Build a set of online friend IDs from the status endpoint (accept many shapes)
-      const onlineSet = new Set()
-      try {
-        const sRes = await fetch(`${SOCKET_URL}/api/online/friends-status`, {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        const sData = await sRes.json()
-        console.log('DEBUG /api/online/friends-status response:', sData)
-        const arr = Array.isArray(sData)
-          ? sData
-          : Array.isArray(sData.friends)
-            ? sData.friends
-            : Array.isArray(sData.data)
-              ? sData.data
-              : []
-        arr.forEach(item => {
-          if (!item) return
-          const ids = [item.id, item._id, item.userId, item.user_id]
-          if (item.user && typeof item.user === 'object') ids.push(item.user.id, item.user._id)
-          ids.forEach(i => { if (i !== undefined && i !== null) onlineSet.add(String(i)) })
-        })
-      } catch (e) {
-        console.warn('Failed to fetch online/friends-status', e)
-      }
-
       const formatted = list.map(f => {
         const u = f.user || f.friend || f
         const fid = String(u._id || u.id)
@@ -178,10 +138,10 @@ export default function Chat({ onLogout }) {
           email: u.email,
           lastMessage: f.lastMessage || f.last_message,
           unreadCount: f.unreadCount || f.unread_count || 0,
-          online: onlineSet.has(fid),
+          online: false, // Will be updated by online-users socket broadcast
         }
       })
-      console.log('DEBUG formatted friends:', formatted, 'onlineSet:', Array.from(onlineSet))
+      console.log('📋 Fetched friends (online status will be updated via socket):', formatted.map(f => f.name))
       setFriends(formatted)
     } catch {
       setFriends([])
@@ -190,6 +150,16 @@ export default function Chat({ onLogout }) {
     }
   }
   useEffect(() => { fetchFriends() }, [])
+
+  // Re-sync online status when friends list loads and socket is ready
+  useEffect(() => {
+    if (friends.length > 0 && socket?.connected && currentUserId) {
+      console.log('🔄 Friends loaded + socket ready, requesting fresh online status')
+      setTimeout(() => {
+        socket.emit('user-online', currentUserId)
+      }, 200)
+    }
+  }, [friends.length, socket?.connected, currentUserId])
 
   /* --------------------------  MESSAGES  ------------------------------ */
   const fetchMessages = async friendId => {
@@ -319,11 +289,31 @@ export default function Chat({ onLogout }) {
       })
     }
 
+    // Listen for broadcast of all online users
+    const onlineUsersHandler = (onlineUserIds) => {
+      console.log('📡 Received online-users broadcast:', onlineUserIds)
+      const onlineSet = new Set(onlineUserIds.map(id => String(id)))
+
+      // Update all friends' online status
+      setFriends(prev => prev.map(f => ({
+        ...f,
+        online: onlineSet.has(String(f._id))
+      })))
+
+      // Update selectedFriend if present
+      setSelectedFriend(prev => {
+        if (!prev) return prev
+        return { ...prev, online: onlineSet.has(String(prev._id)) }
+      })
+    }
+
     socket.on('newMessage', handler)
     socket.on('friendOnlineStatus', onlineStatusHandler)
+    socket.on('online-users', onlineUsersHandler)
     return () => {
       socket.off('newMessage', handler)
       socket.off('friendOnlineStatus', onlineStatusHandler)
+      socket.off('online-users', onlineUsersHandler)
     }
   }, [socket])
 
@@ -438,7 +428,7 @@ export default function Chat({ onLogout }) {
 
   // Debug logging for friends online status
   useEffect(() => {
-    console.log('📋 Friends list updated:')
+    console.log('Friends list updated:')
     friends.forEach(f => {
       console.log(`  - ${f.name}: ${f.online ? '🟢 ONLINE' : '⚪ OFFLINE'}`)
     })
@@ -448,9 +438,9 @@ export default function Chat({ onLogout }) {
   return (
     <div className="flex h-screen w-screen bg-gray-100 overflow-hidden">
       {/* ------------ Sidebar ------------ */}
-      <div className="w-80 flex flex-col border-r bg-white shadow-lg">
+      <div className="w-80 flex flex-col border bg-white shadow">
         <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 text-white">
-          <div className="p-4 border-b border-indigo-500 flex items-center space-x-3">
+          <div className="p-4 border border-indigo-500 flex items-center space-x-3">
             <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg">
               {currentUserName.charAt(0).toUpperCase()}
             </div>
