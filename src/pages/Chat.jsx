@@ -438,7 +438,7 @@ export default function Chat({ onLogout }) {
   return (
     <div className="flex h-screen w-screen bg-gray-100 overflow-hidden">
       {/* ------------ Sidebar ------------ */}
-      <div className="w-80 flex flex-col border bg-white shadow">
+      <div className="w-80 flex flex-col bg-white shadow-full">
         <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 text-white">
           <div className="p-4 border border-indigo-500 flex items-center space-x-3">
             <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg">
@@ -452,7 +452,7 @@ export default function Chat({ onLogout }) {
               </div>
             </div>
           </div>
-          <div className="px-4 py-3">
+          <div className=" bg-indigo-700 px-4 py-3 border-t border-indigo-500">
             <h2 className="text-xl font-bold">Chats</h2>
           </div>
         </div>
@@ -501,10 +501,10 @@ export default function Chat({ onLogout }) {
           )}
         </div>
 
-        <div className="p-4 border-t bg-gray-50">
+        <div className="p-4 justify-center space-x-3  border-t border-gray-200 flex">
           <button
             onClick={handleLogout}
-            className="w-full bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-4 py-2.5 rounded-md transition-all text-sm font-medium shadow-md hover:shadow-lg"
+            className=" bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white px-4 py-2.5 rounded-md transition-all text-sm font-medium shadow-md hover:shadow-lg"
           >
             Logout
           </button>
@@ -512,10 +512,10 @@ export default function Chat({ onLogout }) {
       </div>
 
       {/* ------------ Chat Area ------------ */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col bg-gray-500 shadow-lg">
         {selectedFriend ? (
           <>
-            <div className="px-6 py-4 bg-white border-b shadow-sm">
+            <div className="px-6 py-4 bg-white border-b shadow-lg flex items-center bg-green-500 justify-between">
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center text-white font-bold">
                   {selectedFriend.name.charAt(0).toUpperCase()}
