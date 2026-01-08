@@ -254,18 +254,18 @@ export default function AddFriends({ onFriendAdded, socket }) {
   return (
     <div className="max-w-full mx-auto bg-white p-4 rounded-lg">
 
-      <form onSubmit={handleSearch} className="flex mb-3">
+      <form onSubmit={handleSearch} className="flex mb-3 space-x-2">
         <input
           type="text"
           placeholder="Search by ID, name, or email"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="flex-1 px-3 py-2 border rounded-l-md focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
+          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 text-sm"
         />
         <button
           type="submit"
           disabled={loading}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-r-md hover:bg-indigo-700 disabled:opacity-70 text-sm font-medium"
+          className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-70 text-sm font-medium"
         >
           {loading ? 'Searching...' : 'Search'}
         </button>

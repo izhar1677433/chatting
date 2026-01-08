@@ -112,7 +112,7 @@ export default function Requests({ socket, onFriendAdded }) {
     }
 
     return (
-        <div className="p-4 border-b">
+        <div className="p-4 border-b border-gray-200 shaodow-lg">
             <h3 className="text-sm font-semibold mb-2">Requests</h3>
             {loading && <div className="text-xs text-gray-500">Loading...</div>}
             {error && <div className="text-xs text-red-600 mb-2">{error}</div>}
