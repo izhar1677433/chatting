@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import io from 'socket.io-client'
 import AddFriends from '../components/Addfrnds'
 import Requests from '../components/Requests'
+import { API_URL, SOCKET_URL } from '../config'
 
 export default function Chat({ onLogout }) {
   /* -----------------------------  STATE  ------------------------------ */
@@ -40,7 +41,6 @@ export default function Chat({ onLogout }) {
   useEffect(() => { currentUserIdRef.current = currentUserId }, [currentUserId])
 
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : ''
-  const SOCKET_URL = 'http://localhost:5000'
 
   /* --------------------------  SOCKET INIT  --------------------------- */
   useEffect(() => {

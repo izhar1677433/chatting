@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_URL } from '../config'
 
 export default function AddFriends({ onFriendAdded, socket }) {
   const [query, setQuery] = useState('')
@@ -32,7 +33,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
   useEffect(() => {
     const fetchRequests = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/friends/requests', {
+        const res = await fetch(`${API_URL}/api/friends/requests`, {
           headers: { Authorization: `Bearer ${token}` }
         })
         if (!res.ok) return
@@ -103,7 +104,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
     try {
       // If query looks like an ID, search by ID
       if (isValidObjectId(query.trim())) {
-        const res = await fetch(`http://localhost:5000/api/friends/user/${query.trim()}`, {
+        const res = await fetch(`${API_URL}/api/friends/user/${query.trim()}`, {
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
@@ -127,7 +128,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
         }
       } else {
         // Search by name or email
-        const res = await fetch('http://localhost:5000/api/friends/search', {
+        const res = await fetch(`${API_URL}/api/friends/search`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -174,7 +175,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
         setLoading(false)
         return
       }
-      const res = await fetch('http://localhost:5000/api/friends/add', {
+      const res = await fetch(`${API_URL}/api/friends/add`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -216,7 +217,7 @@ export default function AddFriends({ onFriendAdded, socket }) {
   const handleAccept = async (requesterId) => {
     setLoading(true)
     try {
-      const res = await fetch('http://localhost:5000/api/friends/requests/respond', {
+      const res = await fetch(`${API_URL}/api/friends/requests/respond`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

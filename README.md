@@ -1,4 +1,5 @@
 # React + Vite
+# React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
@@ -16,3 +17,15 @@ Note: This will impact Vite dev & build performances.
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+## Environment variables
+
+The project reads the API and socket endpoints from Vite environment variables. Create a `.env` file at the project root with at least:
+
+```
+VITE_API_URL=https://chat-with-friends-7vlj.onrender.com
+# Optional:
+# VITE_SOCKET_URL=wss://chat-with-friends-7vlj.onrender.com
+```
+
+The app uses `src/config.js` which provides `API_URL` and `SOCKET_URL` (falling back to `http://localhost:5000`).

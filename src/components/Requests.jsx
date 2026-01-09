@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_URL } from '../config'
 
 export default function Requests({ socket, onFriendAdded }) {
     const [requests, setRequests] = useState([])
@@ -10,7 +11,7 @@ export default function Requests({ socket, onFriendAdded }) {
     const fetchRequests = async () => {
         try {
             setLoading(true)
-            const res = await fetch('http://localhost:5000/api/friends/requests', {
+            const res = await fetch(`${API_URL}/api/friends/requests`, {
                 headers: { Authorization: `Bearer ${token}` },
             })
             const data = await res.json()
@@ -79,7 +80,7 @@ export default function Requests({ socket, onFriendAdded }) {
     const respond = async (requesterId, action) => {
         try {
             setLoading(true)
-            const res = await fetch('http://localhost:5000/api/friends/requests/respond', {
+            const res = await fetch(`${API_URL}/api/friends/requests/respond`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
                 body: JSON.stringify({ requesterId: String(requesterId), action }),
