@@ -143,6 +143,17 @@ export default function Chat({ onLogout }) {
       })
       console.log('📋 Fetched friends (online status will be updated via socket):', formatted.map(f => f.name))
       setFriends(formatted)
+      // If socket is connected, ask the server to refresh online status
+      // This helps ensure newly-added friends show their real online state
+      try {
+        if (socket?.connected) {
+          console.log('🔔 Requesting online status refresh for current user')
+          // Emit user-online so server can update/broadcast online list
+          socket.emit('user-online', currentUserId || token)
+        }
+      } catch (e) {
+        console.warn('Failed to request online status refresh', e)
+      }
     } catch {
       setFriends([])
     } finally {

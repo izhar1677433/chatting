@@ -30,7 +30,7 @@ function App() {
       {page === 'signup' && (
         <Signup
           onSwitch={() => setPage('login')}
-          onAuthSuccess={() => setPage('chat')}
+          onAuthSuccess={() => setPage('login')}
         />
       )}
 

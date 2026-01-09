@@ -22,12 +22,7 @@ export default function Signup({ onSwitch, onAuthSuccess }) {
             if (!res.ok) {
                 setError(data.message || 'Signup failed')
             } else {
-                const token = data.token || data.accessToken || ''
-                if (token) localStorage.setItem('token', token)
-                if (data.user) {
-                    if (data.user.id) localStorage.setItem('userId', data.user.id)
-                    if (data.user.name) localStorage.setItem('userName', data.user.name)
-                }
+                // Don't auto-save tokens here; send user to the login page
                 setName('')
                 setEmail('')
                 setPassword('')
