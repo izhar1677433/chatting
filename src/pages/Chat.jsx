@@ -82,7 +82,7 @@ export default function Chat({ onLogout }) {
     if (!token) return
     const fetchCurrentUser = async () => {
       try {
-        const res = await fetch(`${SOCKET_URL}/api/auth/me`, {
+        const res = await fetch(`${API_URL}/api/auth/me`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!res.ok) return setCurrentUserName(localStorage.getItem('userName') || 'User')
@@ -119,7 +119,7 @@ export default function Chat({ onLogout }) {
   const fetchFriends = async () => {
     setFriendsLoading(true)
     try {
-      const res = await fetch(`${SOCKET_URL}/api/friends`, {
+      const res = await fetch(`${API_URL}/api/friends`, {
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       })
       const data = await res.json()
@@ -178,7 +178,7 @@ export default function Chat({ onLogout }) {
     if (!friendId) return
     setMessagesLoading(true)
     try {
-      const res = await fetch(`${SOCKET_URL}/api/messages?friendId=${friendId}`, {
+      const res = await fetch(`${API_URL}/api/messages?friendId=${friendId}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       const data = await res.json()
@@ -227,10 +227,14 @@ export default function Chat({ onLogout }) {
         return String(v)
       }
 
+      const hasText = msg && Object.prototype.hasOwnProperty.call(msg, 'text')
+      const hasContent = msg && Object.prototype.hasOwnProperty.call(msg, 'content')
+
       const norm = {
         _id: normalizeId(msg._id || msg.id) || Date.now().toString(),
         clientTempId: normalizeId(msg.clientTempId || msg.client_temp_id || msg.tempId),
-        text: msg.text || msg.content || '',
+        // Make `text` optional: only set it when the server provided it (or provided `content`)
+        text: hasText ? msg.text : (hasContent ? msg.content : undefined),
         attachments: Array.isArray(msg.attachments) ? msg.attachments : (Array.isArray(msg.files) ? msg.files : []),
         sender: normalizeId(msg.sender || msg.senderId || msg.sender_id),
         receiver: normalizeId(msg.receiver || msg.receiverId || msg.receiver_id || msg.to),
@@ -359,6 +363,70 @@ export default function Chat({ onLogout }) {
     e.target.value = null
   }
 
+  // Ref + handler for image-only capture (camera icon)
+  const imageInputRef = useRef(null)
+  const handleImageCapture = async e => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+
+    // Only keep image files
+    const images = files.filter(f => f.type && f.type.startsWith('image/'))
+    if (images.length === 0) return
+
+    // Prepare optimistic local message
+    const tempId = `temp-${Date.now()}`
+    const mapped = images.map(f => ({ file: f, preview: URL.createObjectURL(f), originalName: f.name, mimeType: f.type, size: f.size, type: 'image' }))
+    const localMsg = {
+      _id: tempId,
+      text: '',
+      sender: currentUserId,
+      receiver: selectedFriend?._id,
+      createdAt: new Date().toISOString(),
+      attachments: mapped.map(a => ({ originalName: a.originalName, mimeType: a.mimeType, size: a.size, preview: a.preview, type: a.type }))
+    }
+    setMessages(prev => (prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]))
+
+    // Build FormData and send immediately
+    try {
+      const form = new FormData()
+      const receiverId = selectedFriend?._id || selectedFriend?.id
+      if (!receiverId) {
+        setError('Invalid recipient')
+        return
+      }
+      form.append('receiver', String(receiverId))
+      // Ensure `text` is provided because server validation requires it
+      form.append('text', (newMessage && newMessage.trim() !== '') ? newMessage : '[image]')
+      form.append('clientTempId', tempId)
+      mapped.forEach(a => form.append('attachments', a.file))
+
+      const res = await fetch(`${API_URL}/api/messages/send`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form
+      })
+      const data = await res.json().catch(async () => {
+        const txt = await res.text().catch(() => '<no-body>')
+        throw new Error(`Server returned non-JSON: ${res.status} ${txt}`)
+      })
+      if (res.ok && data && data.data) {
+        const saved = data.data
+        setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
+      } else {
+        console.error('Image send failed', res.status, data)
+        try { console.error('Full response JSON:', JSON.stringify(data, null, 2)) } catch (e) { }
+        setError(data.message || JSON.stringify(data.errors || data, null, 2) || 'Failed to send image')
+      }
+    } catch (err) {
+      console.error('Image capture send error', err)
+      setError('Failed to send image')
+    } finally {
+      // revoke previews
+      mapped.forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview) })
+      e.target.value = null
+    }
+  }
+
   const removeAttachment = index => {
     setAttachments(prev => {
       const next = [...prev]
@@ -409,21 +477,47 @@ export default function Chat({ onLogout }) {
       try {
         const form = new FormData()
         form.append('receiver', String(receiverId))
-        form.append('text', newMessage)
+        // Always append a non-empty text because backend requires `text`.
+        // Use the typed message when present, otherwise provide a short placeholder.
+        form.append('text', (newMessage && newMessage.trim() !== '') ? newMessage : '')
         form.append('clientTempId', tempId)
         attachments.forEach(a => form.append('attachments', a.file))
 
-        const res = await fetch(`${SOCKET_URL}/api/messages/send`, {
+        // Debug: enumerate FormData entries (logs filenames for File objects)
+        try {
+          for (const pair of form.entries()) {
+            if (pair[1] && pair[1].name) console.log('FormData entry:', pair[0], pair[1].name)
+            else console.log('FormData entry:', pair[0], pair[1])
+          }
+        } catch (e) { console.warn('FormData enumeration failed', e) }
+
+        const res = await fetch(`${API_URL}/api/messages/send`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           body: form
         })
-        const data = await res.json()
-        if (res.ok && data.data) {
-          const saved = data.data
-          setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
-        } else {
-          setError(data.message || data.msg || 'Failed to send attachments')
+
+        // Try to parse JSON response; fall back to raw text for debugging
+        if (res.ok && data && data.data) {
+          try {
+            data = await res.json()
+          } catch (e) {
+            console.error('Send attachments failed', res.status, data)
+            try { console.error('Full response JSON:', JSON.stringify(data, null, 2)) } catch (e) { /* ignore */ }
+            setError(data.message || data.msg || JSON.stringify(data.errors || data, null, 2) || 'Failed to send attachments')
+            setError(`Server error ${res.status}: ${txt}`)
+            setLoading(false)
+            return
+          }
+
+          if (res.ok && data && data.data) {
+            const saved = data.data
+            setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
+          } else {
+            console.error('Send attachments failed', res.status, data)
+            setError(data.message || data.msg || 'Failed to send attachments')
+          }
+
         }
       } catch (err) {
         console.error('Attachment send error', err)
@@ -464,7 +558,7 @@ export default function Chat({ onLogout }) {
   /* --------------------------  LOGOUT  -------------------------------- */
   const handleLogout = async () => {
     try {
-      await fetch(`${SOCKET_URL}/api/auth/logout`, {
+      await fetch(`${API_URL}/api/auth/logout`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -484,9 +578,16 @@ export default function Chat({ onLogout }) {
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
   const groupMessagesByDate = () => {
+    // Ensure messages are ordered by time so grouping produces one group per date
+    const sorted = [...messages].sort((a, b) => {
+      const ta = a && a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const tb = b && b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return ta - tb
+    })
+
     const groups = []
     let curr = null
-    messages.forEach(m => {
+    sorted.forEach(m => {
       const date = formatDate(m.createdAt)
       if (date !== curr) { groups.push({ date, messages: [] }); curr = date }
       groups[groups.length - 1].messages.push(m)
@@ -635,7 +736,7 @@ export default function Chat({ onLogout }) {
                 </div>
               ) : (
                 groupMessagesByDate().map((g, i) => (
-                  <div key={g.date || i} className="mb-6">
+                  <div key={`${g.date || 'group'}-${i}`} className="mb-6">
                     <div className="flex justify-center my-4">
                       <span className="bg-white shadow-sm text-gray-600 px-4 py-1.5 rounded-full text-xs font-medium">
                         {g.date}
@@ -668,7 +769,7 @@ export default function Chat({ onLogout }) {
                                       }
                                       return (
                                         <div key={ai}>
-                                          <a className="text-indigo-600 underline" href={src} target="_blank" rel="noreferrer">{att.originalName || att.filename}</a>
+                                          <a className=" underline" href={src} target="_blank" rel="noreferrer">{att.originalName || att.filename}</a>
                                         </div>
                                       )
                                     })}
@@ -713,6 +814,14 @@ export default function Chat({ onLogout }) {
                     <input type="file" multiple onChange={handleFileChange} className="hidden" />
                     <div className="px-3 py-2 bg-white rounded-full border border-gray-300 text-sm">Attach</div>
                   </label>
+
+                  {/* Camera / image-only button */}
+                  <div>
+                    <input ref={imageInputRef} type="file" accept="image/*" capture="environment" onChange={handleImageCapture} className="hidden" />
+                    <button type="button" onClick={() => imageInputRef.current?.click()} title="Send image" className="px-3 py-2 bg-white rounded-full border border-gray-300 text-sm">
+                      📷
+                    </button>
+                  </div>
 
                   <input
                     type="text"
