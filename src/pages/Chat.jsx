@@ -479,7 +479,7 @@ export default function Chat({ onLogout }) {
         form.append('receiver', String(receiverId))
         // Always append a non-empty text because backend requires `text`.
         // Use the typed message when present, otherwise provide a short placeholder.
-        form.append('text', (newMessage && newMessage.trim() !== '') ? newMessage : '')
+        form.append('text', (newMessage && newMessage.trim() !== '') ? newMessage : '[attachment]')
         form.append('clientTempId', tempId)
         attachments.forEach(a => form.append('attachments', a.file))
 
@@ -497,27 +497,24 @@ export default function Chat({ onLogout }) {
           body: form
         })
 
-        // Try to parse JSON response; fall back to raw text for debugging
+        // Parse JSON response (or raw text for debugging) and handle errors
+        let data
+        try {
+          data = await res.json()
+        } catch (e) {
+          const txt = await res.text().catch(() => '<no-body>')
+          console.error('Send attachments non-JSON response', res.status, txt)
+          setError(`Server error ${res.status}: ${txt}`)
+          setLoading(false)
+          return
+        }
+
         if (res.ok && data && data.data) {
-          try {
-            data = await res.json()
-          } catch (e) {
-            console.error('Send attachments failed', res.status, data)
-            try { console.error('Full response JSON:', JSON.stringify(data, null, 2)) } catch (e) { /* ignore */ }
-            setError(data.message || data.msg || JSON.stringify(data.errors || data, null, 2) || 'Failed to send attachments')
-            setError(`Server error ${res.status}: ${txt}`)
-            setLoading(false)
-            return
-          }
-
-          if (res.ok && data && data.data) {
-            const saved = data.data
-            setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
-          } else {
-            console.error('Send attachments failed', res.status, data)
-            setError(data.message || data.msg || 'Failed to send attachments')
-          }
-
+          const saved = data.data
+          setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
+        } else {
+          console.error('Send attachments failed', res.status, data)
+          setError(data.message || data.msg || JSON.stringify(data.errors || data, null, 2) || 'Failed to send attachments')
         }
       } catch (err) {
         console.error('Attachment send error', err)
@@ -601,9 +598,11 @@ export default function Chat({ onLogout }) {
     if (selectedFriend && friends && friends.length) {
       const found = friends.find(f => String(f._id) === String(selectedFriend._id))
       console.log('🔄 Sync check - selectedFriend:', selectedFriend.name, 'online:', selectedFriend.online, '| found in list:', found?.online)
-      if (found && found.online !== selectedFriend.online) {
-        console.log('🔄 SYNCING selectedFriend.online from', selectedFriend.online, 'to', found.online)
-        setSelectedFriend(prev => ({ ...prev, online: found.online }))
+      // Only promote selectedFriend to online if the friends list reports them online.
+      // Do not set them offline here to avoid flicker/duplicate online entries on refresh.
+      if (found && found.online && !selectedFriend.online) {
+        console.log('🔄 SYNCING selectedFriend.online to true for', selectedFriend.name)
+        setSelectedFriend(prev => ({ ...prev, online: true }))
       }
     }
   }, [friends, selectedFriend])
