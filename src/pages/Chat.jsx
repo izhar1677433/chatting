@@ -378,13 +378,20 @@ export default function Chat({ onLogout }) {
     const mapped = images.map(f => ({ file: f, preview: URL.createObjectURL(f), originalName: f.name, mimeType: f.type, size: f.size, type: 'image' }))
     const localMsg = {
       _id: tempId,
+      clientTempId: tempId,
       text: '',
       sender: currentUserId,
       receiver: selectedFriend?._id,
       createdAt: new Date().toISOString(),
       attachments: mapped.map(a => ({ originalName: a.originalName, mimeType: a.mimeType, size: a.size, preview: a.preview, type: a.type }))
     }
-    setMessages(prev => (prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]))
+    setMessages(prev => {
+      const next = prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]
+      console.log('Optimistic message added:', localMsg._id)
+      // Ensure view scrolls to the newly added optimistic message
+      setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 50)
+      return next
+    })
 
     // Build FormData and send immediately
     try {
@@ -409,9 +416,22 @@ export default function Chat({ onLogout }) {
         const txt = await res.text().catch(() => '<no-body>')
         throw new Error(`Server returned non-JSON: ${res.status} ${txt}`)
       })
-      if (res.ok && data && data.data) {
-        const saved = data.data
-        setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
+      if (res.ok) {
+        const saved = (data && data.data) ? data.data : (data && (data._id || data.id) ? data : null)
+        if (saved) {
+          const savedId = saved._id || saved.id
+          const savedCreated = saved.createdAt || saved.created_at || saved.timestamp
+          const savedAttachments = saved.attachments || saved.files || []
+          setMessages(prev => {
+            const next = prev.map(m => (m._id === tempId ? { ...m, _id: savedId || m._id, createdAt: savedCreated || m.createdAt, attachments: savedAttachments } : m))
+            console.log('Attachment send saved, replaced tempId', tempId, 'with', savedId)
+            setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 50)
+            return next
+          })
+        } else {
+          console.error('Image send returned OK but no message found', data)
+          setError('Server accepted upload but returned unexpected data')
+        }
       } else {
         console.error('Image send failed', res.status, data)
         try { console.error('Full response JSON:', JSON.stringify(data, null, 2)) } catch (e) { }
@@ -465,13 +485,19 @@ export default function Chat({ onLogout }) {
     const tempId = `temp-${Date.now()}`
     const localMsg = {
       _id: tempId,
+      clientTempId: tempId,
       text: newMessage,
       sender: currentUserId,
       receiver: selectedFriend._id,
       createdAt: new Date().toISOString(),
       attachments: attachments.map(a => ({ originalName: a.originalName, mimeType: a.mimeType, size: a.size, preview: a.preview, type: a.type }))
     }
-    setMessages(prev => (prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]))
+    setMessages(prev => {
+      const next = prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]
+      console.log('Optimistic message added (send):', localMsg._id)
+      setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 50)
+      return next
+    })
     // If attachments exist, send via REST multipart/form-data (backend saves and Socket.IO will broadcast)
     if (attachments.length > 0) {
       try {
@@ -509,9 +535,23 @@ export default function Chat({ onLogout }) {
           return
         }
 
-        if (res.ok && data && data.data) {
-          const saved = data.data
-          setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
+        if (res.ok) {
+          // Normalize different backend response shapes.
+          const saved = (data && data.data) ? data.data : (data && (data._id || data.id) ? data : null)
+          if (saved) {
+            const savedId = saved._id || saved.id
+            const savedCreated = saved.createdAt || saved.created_at || saved.timestamp
+            const savedAttachments = saved.attachments || saved.files || []
+            setMessages(prev => {
+              const next = prev.map(m => (m._id === tempId ? { ...m, _id: savedId || m._id, createdAt: savedCreated || m.createdAt, attachments: savedAttachments } : m))
+              console.log('Attachment send saved, replaced tempId', tempId, 'with', savedId)
+              setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 50)
+              return next
+            })
+          } else {
+            console.error('Send attachments returned OK but no message found', data)
+            setError('Server accepted upload but returned unexpected data')
+          }
         } else {
           console.error('Send attachments failed', res.status, data)
           setError(data.message || data.msg || JSON.stringify(data.errors || data, null, 2) || 'Failed to send attachments')
@@ -534,8 +574,12 @@ export default function Chat({ onLogout }) {
           console.log('📨 sendMessage ack:', ack)
           if (ack?.ok && ack.data) {
             setMessages(prev => {
-              if (prev.some(m => m._id === ack.data._id)) return prev.filter(m => m._id !== tempId)
-              return prev.map(m => m._id === tempId ? { ...m, _id: ack.data._id, createdAt: ack.data.createdAt } : m)
+              let next
+              if (prev.some(m => m._id === ack.data._id)) next = prev.filter(m => m._id !== tempId)
+              else next = prev.map(m => m._id === tempId ? { ...m, _id: ack.data._id, createdAt: ack.data.createdAt } : m)
+              console.log('Socket ack received, updated message:', ack.data._id)
+              setTimeout(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, 50)
+              return next
             })
           } else {
             setError(ack?.message || 'Failed to send')
