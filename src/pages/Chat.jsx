@@ -10,6 +10,7 @@ export default function Chat({ onLogout }) {
   const [selectedFriend, setSelectedFriend] = useState(null)
   const [messages, setMessages] = useState([])
   const [newMessage, setNewMessage] = useState('')
+  const [attachments, setAttachments] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -193,6 +194,14 @@ export default function Chat({ onLogout }) {
         sender: normalizeId(m.sender || m.senderId || m.sender_id),
         receiver: normalizeId(m.receiver || m.receiverId || m.receiver_id || m.to),
         createdAt: m.createdAt || m.created_at || m.timestamp,
+        attachments: Array.isArray(m.attachments) ? m.attachments.map(a => ({
+          filename: a.filename,
+          originalName: a.originalName || a.originalname || a.name,
+          mimeType: a.mimeType || a.mimetype,
+          size: a.size,
+          url: a.url,
+          type: a.type || (a.mimetype && a.mimetype.startsWith('image/') ? 'image' : a.mimetype && a.mimetype.startsWith('video/') ? 'video' : 'file')
+        })) : []
       }))
       setMessages(Array.from(new Map(msgs.map(m => [m._id, m])).values()))
     } catch {
@@ -222,6 +231,7 @@ export default function Chat({ onLogout }) {
         _id: normalizeId(msg._id || msg.id) || Date.now().toString(),
         clientTempId: normalizeId(msg.clientTempId || msg.client_temp_id || msg.tempId),
         text: msg.text || msg.content || '',
+        attachments: Array.isArray(msg.attachments) ? msg.attachments : (Array.isArray(msg.files) ? msg.files : []),
         sender: normalizeId(msg.sender || msg.senderId || msg.sender_id),
         receiver: normalizeId(msg.receiver || msg.receiverId || msg.receiver_id || msg.to),
         createdAt: msg.createdAt || msg.created_at || msg.timestamp || new Date().toISOString(),
@@ -328,6 +338,44 @@ export default function Chat({ onLogout }) {
     }
   }, [socket])
 
+  // Cleanup any created object URLs for previews
+  useEffect(() => {
+    return () => {
+      attachments.forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview) })
+    }
+  }, [attachments])
+
+  const handleFileChange = e => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+    const mapped = files.map(f => {
+      const preview = URL.createObjectURL(f)
+      let type = 'file'
+      if (f.type && f.type.startsWith('image/')) type = 'image'
+      else if (f.type && f.type.startsWith('video/')) type = 'video'
+      return { file: f, preview, originalName: f.name, mimeType: f.type, size: f.size, type }
+    })
+    setAttachments(prev => [...prev, ...mapped])
+    e.target.value = null
+  }
+
+  const removeAttachment = index => {
+    setAttachments(prev => {
+      const next = [...prev]
+      const [removed] = next.splice(index, 1)
+      if (removed && removed.preview) URL.revokeObjectURL(removed.preview)
+      return next
+    })
+  }
+
+  const getAttachmentUrl = att => {
+    if (!att) return ''
+    if (att.preview) return att.preview
+    if (!att.url) return ''
+    if (att.url.startsWith('http')) return att.url
+    return `${SOCKET_URL}${att.url}`
+  }
+
   /* --------------------------  SCROLL  -------------------------------- */
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -336,7 +384,7 @@ export default function Chat({ onLogout }) {
   /* --------------------------  SEND MSG  ------------------------------ */
   const handleSendMessage = async e => {
     e.preventDefault()
-    if (!newMessage.trim() || !selectedFriend) return
+    if ((!newMessage.trim() && attachments.length === 0) || !selectedFriend) return
     setLoading(true); setError('')
 
     const receiverId = selectedFriend._id || selectedFriend.id
@@ -353,33 +401,63 @@ export default function Chat({ onLogout }) {
       sender: currentUserId,
       receiver: selectedFriend._id,
       createdAt: new Date().toISOString(),
+      attachments: attachments.map(a => ({ originalName: a.originalName, mimeType: a.mimeType, size: a.size, preview: a.preview, type: a.type }))
     }
     setMessages(prev => (prev.some(m => m._id === localMsg._id) ? prev : [...prev, localMsg]))
+    // If attachments exist, send via REST multipart/form-data (backend saves and Socket.IO will broadcast)
+    if (attachments.length > 0) {
+      try {
+        const form = new FormData()
+        form.append('receiver', String(receiverId))
+        form.append('text', newMessage)
+        form.append('clientTempId', tempId)
+        attachments.forEach(a => form.append('attachments', a.file))
 
-    /* Send via Socket.IO only (handles both DB + real-time emit) */
-    if (!socketConnected) {
-      setError('Socket not connected yet. Please wait a moment.')
-      setLoading(false)
-      return
-    }
-    if (socket?.connected) {
-      const payload = { to: String(receiverId), text: newMessage, clientTempId: tempId }
-      console.log('📤 Emitting sendMessage with payload:', payload)
-      socket.emit('sendMessage', payload, ack => {
-        console.log('📨 sendMessage ack:', ack)
-        if (ack?.ok && ack.data) {
-          setMessages(prev => {
-            if (prev.some(m => m._id === ack.data._id)) return prev.filter(m => m._id !== tempId)
-            return prev.map(m => m._id === tempId ? { ...m, _id: ack.data._id, createdAt: ack.data.createdAt } : m)
-          })
+        const res = await fetch(`${SOCKET_URL}/api/messages/send`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form
+        })
+        const data = await res.json()
+        if (res.ok && data.data) {
+          const saved = data.data
+          setMessages(prev => prev.map(m => (m._id === tempId ? { ...m, _id: saved._id, createdAt: saved.createdAt, attachments: saved.attachments || [] } : m)))
         } else {
-          setError(ack?.message || 'Failed to send')
+          setError(data.message || data.msg || 'Failed to send attachments')
         }
-      })
+      } catch (err) {
+        console.error('Attachment send error', err)
+        setError('Failed to send attachments')
+      }
     } else {
-      setError('Not connected to server')
+      /* Send via Socket.IO only (text-only messages) */
+      if (!socketConnected) {
+        setError('Socket not connected yet. Please wait a moment.')
+        setLoading(false)
+        return
+      }
+      if (socket?.connected) {
+        const payload = { to: String(receiverId), text: newMessage, clientTempId: tempId }
+        console.log('📤 Emitting sendMessage with payload:', payload)
+        socket.emit('sendMessage', payload, ack => {
+          console.log('📨 sendMessage ack:', ack)
+          if (ack?.ok && ack.data) {
+            setMessages(prev => {
+              if (prev.some(m => m._id === ack.data._id)) return prev.filter(m => m._id !== tempId)
+              return prev.map(m => m._id === tempId ? { ...m, _id: ack.data._id, createdAt: ack.data.createdAt } : m)
+            })
+          } else {
+            setError(ack?.message || 'Failed to send')
+          }
+        })
+      } else {
+        setError('Not connected to server')
+      }
     }
     setNewMessage('')
+    // clear attachments and revoke previews
+    attachments.forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview) })
+    setAttachments([])
     setLoading(false)
   }
 
@@ -574,7 +652,29 @@ export default function Chat({ onLogout }) {
                                 : 'bg-white text-gray-800 shadow-md border border-gray-200 rounded-tl-2xl rounded-tr-2xl rounded-br-2xl'
                                 } px-4 py-3`}
                             >
-                              <p className="break-words">{msg.text}</p>
+                              <div className="break-words">
+                                {msg.text && <p>{msg.text}</p>}
+                                {msg.attachments && msg.attachments.length > 0 && (
+                                  <div className="mt-2 space-y-2">
+                                    {msg.attachments.map((att, ai) => {
+                                      const src = getAttachmentUrl(att)
+                                      if ((att.type || (att.mimeType && att.mimeType.startsWith('image/'))) === 'image') {
+                                        return <img key={ai} src={src} alt={att.originalName || att.filename} className="max-w-xs rounded-md" />
+                                      }
+                                      if ((att.type || (att.mimeType && att.mimeType.startsWith('video/'))) === 'video') {
+                                        return (
+                                          <video key={ai} src={src} controls className="max-w-xs rounded-md" />
+                                        )
+                                      }
+                                      return (
+                                        <div key={ai}>
+                                          <a className="text-indigo-600 underline" href={src} target="_blank" rel="noreferrer">{att.originalName || att.filename}</a>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                             <div className={`text-xs text-gray-500 mt-1 px-2 ${isMe ? 'text-right' : 'text-left'}`}>
                               {formatTime(msg.createdAt)}
@@ -590,21 +690,45 @@ export default function Chat({ onLogout }) {
             </div>
 
             <form onSubmit={handleSendMessage} className="px-6 py-4  border-t border-gray-200 bg-gradient-to-b from-gray-50 to-gray-100  shadow-lg">
-              <div className="flex items-center space-x-3">
-                <input
-                  type="text"
-                  value={newMessage}
-                  onChange={e => setNewMessage(e.target.value)}
-                  placeholder="Type a message..."
-                  className="flex-1 px-4 py-3 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                />
-                <button
-                  type="submit"
-                  disabled={loading || !newMessage.trim() || !socketConnected}
-                  className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white px-6 py-3 rounded-full font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
-                >
-                  {loading ? 'Sending...' : 'Send'}
-                </button>
+              <div className="space-y-2">
+                {attachments.length > 0 && (
+                  <div className="flex items-center space-x-2 mb-2 overflow-x-auto">
+                    {attachments.map((a, i) => (
+                      <div key={i} className="relative border rounded-md p-1 bg-white">
+                        {a.type === 'image' ? (
+                          <img src={a.preview} alt={a.originalName} className="w-24 h-24 object-cover rounded-md" />
+                        ) : a.type === 'video' ? (
+                          <video src={a.preview} className="w-24 h-24 object-cover rounded-md" />
+                        ) : (
+                          <div className="w-24 h-24 flex items-center justify-center text-sm px-2">{a.originalName}</div>
+                        )}
+                        <button type="button" onClick={() => removeAttachment(i)} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center">×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center space-x-3">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input type="file" multiple onChange={handleFileChange} className="hidden" />
+                    <div className="px-3 py-2 bg-white rounded-full border border-gray-300 text-sm">Attach</div>
+                  </label>
+
+                  <input
+                    type="text"
+                    value={newMessage}
+                    onChange={e => setNewMessage(e.target.value)}
+                    placeholder="Type a message..."
+                    className="flex-1 px-4 py-3 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || ((!newMessage.trim() && attachments.length === 0) || (!socketConnected && attachments.length === 0))}
+                    className="bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 text-white px-6 py-3 rounded-full font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
+                  >
+                    {loading ? 'Sending...' : 'Send'}
+                  </button>
+                </div>
               </div>
             </form>
           </>
