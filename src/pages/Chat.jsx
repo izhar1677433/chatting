@@ -280,17 +280,38 @@ export default function Chat({ onLogout }) {
         console.log('💬 Adding to open chat with:', open.name)
         setMessages(prev => {
           const prevIds = new Set(prev.map(m => String(m._id)))
-          if (prevIds.has(String(norm._id))) {
-            if (norm.clientTempId) {
-              return prev.map(m => (String(m._id) === String(norm.clientTempId) ? { ...m, ...norm, _id: norm._id } : m))
-            }
-            return prev
+
+          // If server sent the canonical _id and we already have it, skip
+          if (norm._id && prevIds.has(String(norm._id))) return prev
+
+          // If server provided clientTempId, replace the optimistic message
+          if (norm.clientTempId) {
+            const mapped = prev.map(m => (String(m._id) === String(norm.clientTempId) ? { ...m, ...norm, _id: norm._id } : m))
+            // If replacement happened, return mapped
+            if (mapped.some((m, i) => String(prev[i]._id) !== String(m._id))) return mapped
           }
 
-          if (norm.clientTempId && prevIds.has(String(norm.clientTempId))) {
-            return prev.map(m => (String(m._id) === String(norm.clientTempId) ? { ...m, ...norm, _id: norm._id } : m))
+          // Heuristic: match optimistic message by sender/receiver/text and close createdAt timestamp
+          const approxMatchIndex = prev.findIndex(m => {
+            try {
+              if (!m) return false
+              if (String(m.sender) !== String(norm.sender)) return false
+              if (String(m.receiver) !== String(norm.receiver)) return false
+              const mText = (m.text || '').toString()
+              const nText = (norm.text || '').toString()
+              if (mText && nText && mText !== nText) return false
+              const a = new Date(m.createdAt || 0).getTime()
+              const b = new Date(norm.createdAt || 0).getTime()
+              if (!a || !b) return false
+              return Math.abs(a - b) < 5000 // within 5s
+            } catch (e) { return false }
+          })
+          if (approxMatchIndex !== -1) {
+            const replaced = prev.map((m, i) => i === approxMatchIndex ? { ...m, ...norm, _id: norm._id } : m)
+            return replaced
           }
 
+          // Default: append new message
           const next = [...prev, norm]
           console.log('🔁 Messages: prevLength=', prev.length, 'nextLength=', next.length)
           return next
