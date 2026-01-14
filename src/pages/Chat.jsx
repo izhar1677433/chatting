@@ -14,6 +14,8 @@ export default function Chat({ onLogout }) {
   const [attachments, setAttachments] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
+  const [messageSearchQuery, setMessageSearchQuery] = useState('')
+  const [messageSearchResults, setMessageSearchResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [friendsLoading, setFriendsLoading] = useState(false)
   const [messagesLoading, setMessagesLoading] = useState(false)
@@ -360,6 +362,29 @@ export default function Chat({ onLogout }) {
     }
   }, [socket])
 
+  // Message search: update results when query or messages change
+  useEffect(() => {
+    const q = String(messageSearchQuery || '').trim().toLowerCase()
+    if (!q) { setMessageSearchResults([]); return }
+    try {
+      const matches = (messages || []).filter(m => {
+        const text = (m.text || '').toString().toLowerCase()
+        if (text.includes(q)) return true
+        // check attachments' names
+        if (Array.isArray(m.attachments)) {
+          for (const a of m.attachments) {
+            const n = (a.originalName || a.filename || '').toString().toLowerCase()
+            if (n.includes(q)) return true
+          }
+        }
+        return false
+      })
+      setMessageSearchResults(matches)
+    } catch (e) {
+      setMessageSearchResults([])
+    }
+  }, [messageSearchQuery, messages])
+
   // Cleanup any created object URLs for previews
   useEffect(() => {
     return () => {
@@ -504,6 +529,18 @@ export default function Chat({ onLogout }) {
     if (!att.url) return ''
     if (att.url.startsWith('http')) return att.url
     return `${SOCKET_URL}${att.url}`
+  }
+
+  // Scroll to a specific message and briefly highlight it
+  const scrollToMessage = msgId => {
+    if (!msgId) return
+    const el = document.getElementById(`msg-${msgId}`)
+    if (!el) return
+    try {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('ring-4', 'ring-yellow-300')
+      setTimeout(() => { el.classList.remove('ring-4', 'ring-yellow-300') }, 1800)
+    } catch (e) { console.warn('scrollToMessage failed', e) }
   }
 
   /* --------------------------  SCROLL  -------------------------------- */
@@ -842,8 +879,25 @@ export default function Chat({ onLogout }) {
                   <p className="text-xs text-gray-500">{selectedFriend.email}</p>
                 </div>
               </div>
-
-
+              <div className="ml-4 relative">
+                <input
+                  type="text"
+                  value={messageSearchQuery}
+                  onChange={e => setMessageSearchQuery(e.target.value)}
+                  placeholder="Search messages..."
+                  className="px-3 py-1 rounded-md border border-gray-300 text-sm w-64"
+                />
+                {messageSearchResults.length > 0 && (
+                  <div className="absolute right-0 mt-2 w-72 bg-white border rounded shadow z-50 max-h-60 overflow-y-auto divide-y divide-gray-100">
+                    {messageSearchResults.map(r => (
+                      <div key={r._id || r.clientTempId || r.createdAt} onClick={() => { scrollToMessage(r._id); setMessageSearchResults([]) }} className="p-2 hover:bg-gray-100 cursor-pointer">
+                        <div className="text-sm text-gray-800 truncate">{(r.text && r.text.length > 0) ? r.text : (r.attachments && r.attachments.length > 0 ? '[attachment]' : '<no-content>')}</div>
+                        <div className="text-xs text-gray-400">{formatTime(r.createdAt)}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto bg-white p-6">
@@ -868,7 +922,7 @@ export default function Chat({ onLogout }) {
                     {g.messages.map(msg => {
                       const isMe = String(msg.sender) === String(currentUserId)
                       return (
-                        <div key={msg._id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-3`}>
+                        <div id={`msg-${msg._id}`} key={msg._id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} mb-3`}>
                           <div className="flex flex-col max-w-md">
                             <div
                               className={`${isMe
