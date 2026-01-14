@@ -27,6 +27,7 @@ export default function Chat({ onLogout }) {
   const [socket, setSocket] = useState(null)
   const [socketConnected, setSocketConnected] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [pendingRequestsCount, setPendingRequestsCount] = useState(0)
 
   // parsed token fallback (quick id/name extraction without server call)
   const parseJwt = t => {
@@ -151,6 +152,8 @@ export default function Chat({ onLogout }) {
       })
       console.log('📋 Fetched friends (online status will be updated via socket):', formatted.map(f => f.name))
       setFriends(formatted)
+      // Refresh pending requests count after friends list changes (e.g., after accepting a request)
+      try { fetchPendingRequestsCount() } catch (e) { /* ignore */ }
       // If socket is connected, ask the server to refresh online status
       // This helps ensure newly-added friends show their real online state
       try {
@@ -168,7 +171,40 @@ export default function Chat({ onLogout }) {
       setFriendsLoading(false)
     }
   }
+  // Try multiple common endpoints to determine how many pending friend requests exist
+  const fetchPendingRequestsCount = async () => {
+    if (!token) return
+    const endpoints = [
+      `${API_URL}/api/requests/pending`,
+      `${API_URL}/api/friend-requests`,
+      `${API_URL}/api/requests`,
+      `${API_URL}/api/friends/requests`,
+    ]
+    try {
+      for (const url of endpoints) {
+        try {
+          const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+          if (!res.ok) continue
+          const data = await res.json().catch(() => null)
+          if (!data) continue
+          if (Array.isArray(data)) { setPendingRequestsCount(data.length); return }
+          if (Array.isArray(data.requests)) { setPendingRequestsCount(data.requests.length); return }
+          if (Array.isArray(data.data)) { setPendingRequestsCount(data.data.length); return }
+          if (typeof data.count === 'number') { setPendingRequestsCount(data.count); return }
+          if (typeof data.total === 'number') { setPendingRequestsCount(data.total); return }
+        } catch (e) {
+          // ignore and try next
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    setPendingRequestsCount(0)
+  }
   useEffect(() => { fetchFriends() }, [])
+
+  // Fetch pending requests count on mount / when token changes
+  useEffect(() => { fetchPendingRequestsCount() }, [token])
 
   // Clear unread count for a friend locally (called when opening the chat)
   const clearUnread = friendId => {
@@ -373,13 +409,83 @@ export default function Chat({ onLogout }) {
       })
     }
 
+    const friendRequestHandler = data => {
+      console.log('🔔 Friend request / requests update event:', data)
+      try {
+        // If server sent an explicit count, use it
+        if (typeof data === 'number') { setPendingRequestsCount(data); return }
+        if (data && typeof data === 'object') {
+          if (Array.isArray(data)) { setPendingRequestsCount(data.length); return }
+          if (typeof data.count === 'number') { setPendingRequestsCount(data.count); return }
+          if (typeof data.total === 'number') { setPendingRequestsCount(data.total); return }
+          // If the payload contains a request object, treat as a new incoming request
+          if (data.request || data.newRequest || data.friendRequest || data._id || data.id) { setPendingRequestsCount(prev => (prev || 0) + 1); return }
+          // Some servers send an action/event label
+          const action = (data.action || data.type || data.event || '').toString().toLowerCase()
+          if (action.includes('create') || action.includes('new') || action.includes('received') || action.includes('incoming')) {
+            setPendingRequestsCount(prev => (prev || 0) + 1)
+            return
+          }
+        }
+      } catch (e) {
+        console.warn('friendRequestHandler parse error', e)
+      }
+      // Fallback: refresh the authoritative count from the server
+      try { fetchPendingRequestsCount() } catch (e) { /* ignore */ }
+    }
+
+    const friendAcceptedHandler = data => {
+      console.log('🔔 Friend request accepted / friend added event:', data)
+      try {
+        // Prefer authoritative refresh
+        fetchFriends()
+        fetchPendingRequestsCount()
+        // Also decrement locally as a quick response if fetch is slow
+        setPendingRequestsCount(prev => Math.max(0, (prev || 0) - 1))
+      } catch (e) { console.warn('friendAcceptedHandler error', e) }
+    }
+
     socket.on('newMessage', handler)
     socket.on('friendOnlineStatus', onlineStatusHandler)
     socket.on('online-users', onlineUsersHandler)
+    // Common event names for friend-request updates (try multiple names to be resilient)
+    socket.on('friendRequest', friendRequestHandler)
+    socket.on('newFriendRequest', friendRequestHandler)
+    socket.on('requests-updated', friendRequestHandler)
+    socket.on('friend-request', friendRequestHandler)
+    socket.on('request', friendRequestHandler)
+    socket.on('request_received', friendRequestHandler)
+    socket.on('requestCreated', friendRequestHandler)
+    socket.on('friend_request_created', friendRequestHandler)
+    socket.on('incoming-request', friendRequestHandler)
+    socket.on('request:created', friendRequestHandler)
+    // Events indicating a request was accepted / friend was added
+    socket.on('requestAccepted', friendAcceptedHandler)
+    socket.on('friendAccepted', friendAcceptedHandler)
+    socket.on('friend-added', friendAcceptedHandler)
+    socket.on('friend:added', friendAcceptedHandler)
+    socket.on('request:accepted', friendAcceptedHandler)
+    socket.on('friend_accept', friendAcceptedHandler)
     return () => {
       socket.off('newMessage', handler)
       socket.off('friendOnlineStatus', onlineStatusHandler)
       socket.off('online-users', onlineUsersHandler)
+      socket.off('friendRequest', friendRequestHandler)
+      socket.off('newFriendRequest', friendRequestHandler)
+      socket.off('requests-updated', friendRequestHandler)
+      socket.off('friend-request', friendRequestHandler)
+      socket.off('request', friendRequestHandler)
+      socket.off('request_received', friendRequestHandler)
+      socket.off('requestCreated', friendRequestHandler)
+      socket.off('friend_request_created', friendRequestHandler)
+      socket.off('incoming-request', friendRequestHandler)
+      socket.off('request:created', friendRequestHandler)
+      socket.off('requestAccepted', friendAcceptedHandler)
+      socket.off('friendAccepted', friendAcceptedHandler)
+      socket.off('friend-added', friendAcceptedHandler)
+      socket.off('friend:added', friendAcceptedHandler)
+      socket.off('request:accepted', friendAcceptedHandler)
+      socket.off('friend_accept', friendAcceptedHandler)
     }
   }, [socket])
 
@@ -792,7 +898,14 @@ export default function Chat({ onLogout }) {
               </div>
             </div>
             <div className="flex items-center space-x-2">
-              <Button type="primary" onClick={() => setDrawerOpen(true)}>Add Friends</Button>
+              <div className="relative">
+                <Button type="primary" onClick={() => setDrawerOpen(true)}>Add Friends</Button>
+                {pendingRequestsCount > 0 && (
+                  <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium bg-red-500 text-white rounded-full">
+                    {pendingRequestsCount > 99 ? '99+' : pendingRequestsCount}
+                  </span>
+                )}
+              </div>
             </div>
 
             <Drawer
