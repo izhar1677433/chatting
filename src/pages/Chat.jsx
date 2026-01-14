@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import io from 'socket.io-client'
-import AddFriends from '../components/Addfrnds'
+import { Button, Drawer } from 'antd'
+import Addfrnds from '../components/Addfrnds'
 import Requests from '../components/Requests'
 import { API_URL, SOCKET_URL } from '../config'
 
@@ -23,6 +24,7 @@ export default function Chat({ onLogout }) {
   const messagesEndRef = useRef(null)
   const [socket, setSocket] = useState(null)
   const [socketConnected, setSocketConnected] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   // parsed token fallback (quick id/name extraction without server call)
   const parseJwt = t => {
@@ -40,6 +42,8 @@ export default function Chat({ onLogout }) {
   useEffect(() => { selectedFriendRef.current = selectedFriend }, [selectedFriend])
   const currentUserIdRef = useRef(currentUserId)
   useEffect(() => { currentUserIdRef.current = currentUserId }, [currentUserId])
+  // Track processed incoming message IDs to avoid double-processing
+  const processedMessageIdsRef = useRef(new Set())
 
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : ''
   const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024 // 10MB
@@ -164,6 +168,11 @@ export default function Chat({ onLogout }) {
   }
   useEffect(() => { fetchFriends() }, [])
 
+  // Clear unread count for a friend locally (called when opening the chat)
+  const clearUnread = friendId => {
+    setFriends(prev => prev.map(f => (String(f._id) === String(friendId) ? { ...f, unreadCount: 0 } : f)))
+  }
+
   // Re-sync online status when friends list loads and socket is ready
   useEffect(() => {
     if (friends.length > 0 && socket?.connected && currentUserId) {
@@ -241,6 +250,14 @@ export default function Chat({ onLogout }) {
         receiver: normalizeId(msg.receiver || msg.receiverId || msg.receiver_id || msg.to),
         createdAt: msg.createdAt || msg.created_at || msg.timestamp || new Date().toISOString(),
       }
+
+      // Deduplicate incoming messages to avoid double-counting unread counts
+      const msgKey = norm._id || norm.clientTempId || `${norm.sender || ''}:${norm.createdAt || ''}`
+      if (processedMessageIdsRef.current.has(msgKey)) {
+        console.log('Skipping already-processed message:', msgKey)
+        return
+      }
+      processedMessageIdsRef.current.add(msgKey)
 
       const me = currentUserIdRef.current ? String(currentUserIdRef.current) : null
       const sid = norm.sender ? String(norm.sender) : null
@@ -716,6 +733,28 @@ export default function Chat({ onLogout }) {
                 <span className={`text-xs ${socketConnected ? 'text-green-200' : 'text-gray-400'}`}>{socketConnected ? 'Online' : 'Offline'}</span>
               </div>
             </div>
+            <div className="flex items-center space-x-2">
+              <Button type="primary" onClick={() => setDrawerOpen(true)}>Add Friends</Button>
+            </div>
+
+            <Drawer
+              title="Add Friends"
+              placement="right"
+              width={500}
+              onClose={() => setDrawerOpen(false)}
+              open={drawerOpen}
+              extra={
+                <div className="space-x-2">
+                  <Button onClick={() => setDrawerOpen(false)}>Cancel</Button>
+                  <Button type="primary" onClick={() => setDrawerOpen(false)}>OK</Button>
+                </div>
+              }
+            >
+              <div className="space-y-4">
+                <Requests socket={socket} onFriendAdded={fetchFriends} />
+                <Addfrnds socket={socket} onFriendAdded={fetchFriends} />
+              </div>
+            </Drawer>
           </div>
           <div className=" bg-indigo-700 px-4 py-3 ">
             <h2 className="text-xl font-bold">Chats</h2>
@@ -732,7 +771,7 @@ export default function Chat({ onLogout }) {
               {friends.map(f => (
                 <div
                   key={f._id}
-                  onClick={() => setSelectedFriend(f)}
+                  onClick={() => { setSelectedFriend(f); clearUnread(f._id); }}
                   className={`p-4 cursor-pointer transition-all ${selectedFriend?._id === f._id
                     ? 'bg-indigo-50 border-l-4 border-indigo-600'
                     : 'hover:bg-gray-50 border-l-4 border-transparent'}`}
@@ -750,7 +789,14 @@ export default function Chat({ onLogout }) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <h4 className="font-semibold text-gray-900 truncate">{f.name}</h4>
+                        <div className="flex items-center space-x-2">
+                          <h4 className="font-semibold text-gray-900 truncate">{f.name}</h4>
+                          {f.unreadCount > 0 && (
+                            <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium bg-red-500 text-white rounded-full">
+                              {f.unreadCount > 99 ? '99+' : f.unreadCount}
+                            </span>
+                          )}
+                        </div>
                         <span className={`text-xs font-medium ${f.online ? 'text-green-600' : 'text-gray-400'}`}>
                           {f.online ? 'Online' : 'Offline'}
                         </span>
@@ -796,6 +842,8 @@ export default function Chat({ onLogout }) {
                   <p className="text-xs text-gray-500">{selectedFriend.email}</p>
                 </div>
               </div>
+
+
             </div>
 
             <div className="flex-1 overflow-y-auto bg-white p-6">
@@ -933,16 +981,7 @@ export default function Chat({ onLogout }) {
         )}
       </div>
 
-      {/* ------------ Add Friends Panel ------------ */}
-      <div className="w-96 flex flex-col border-l border-gray-200 bg-white shadow-lg">
-        <div className="p-4 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white">
-          <h2 className="text-xl font-bold">Add Friends</h2>
-        </div>
-        <div className="flex-1 overflow-y-auto shadow-lg">
-          <Requests socket={socket} onFriendAdded={fetchFriends} />
-          <AddFriends socket={socket} onFriendAdded={fetchFriends} />
-        </div>
-      </div>
+      {/* Right panel removed so chat area uses full width */}
     </div>
   )
 }
