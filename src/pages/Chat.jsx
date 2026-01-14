@@ -42,6 +42,7 @@ export default function Chat({ onLogout }) {
   useEffect(() => { currentUserIdRef.current = currentUserId }, [currentUserId])
 
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : ''
+  const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024 // 10MB
 
   /* --------------------------  SOCKET INIT  --------------------------- */
   useEffect(() => {
@@ -349,9 +350,24 @@ export default function Chat({ onLogout }) {
     }
   }, [attachments])
 
+  // Auto-clear error after a short delay
+  useEffect(() => {
+    if (!error) return
+    const t = setTimeout(() => setError(''), 5000)
+    return () => clearTimeout(t)
+  }, [error])
+
   const handleFileChange = e => {
     const files = Array.from(e.target.files || [])
     if (files.length === 0) return
+    // Reject files larger than MAX_ATTACHMENT_SIZE
+    const oversized = files.filter(f => f.size > MAX_ATTACHMENT_SIZE)
+    if (oversized.length > 0) {
+      setError('File is larger than 10MB')
+      // revoke any created previews just in case (none created yet)
+      e.target.value = null
+      return
+    }
     const mapped = files.map(f => {
       const preview = URL.createObjectURL(f)
       let type = 'file'
@@ -359,6 +375,7 @@ export default function Chat({ onLogout }) {
       else if (f.type && f.type.startsWith('video/')) type = 'video'
       return { file: f, preview, originalName: f.name, mimeType: f.type, size: f.size, type }
     })
+    setError('')
     setAttachments(prev => [...prev, ...mapped])
     e.target.value = null
   }
@@ -372,6 +389,14 @@ export default function Chat({ onLogout }) {
     // Only keep image files
     const images = files.filter(f => f.type && f.type.startsWith('image/'))
     if (images.length === 0) return
+
+    // Reject images larger than MAX_ATTACHMENT_SIZE
+    const oversizedImgs = images.filter(f => f.size > MAX_ATTACHMENT_SIZE)
+    if (oversizedImgs.length > 0) {
+      setError('File is larger than 10MB')
+      e.target.value = null
+      return
+    }
 
     // Prepare optimistic local message
     const tempId = `temp-${Date.now()}`
@@ -500,6 +525,13 @@ export default function Chat({ onLogout }) {
     })
     // If attachments exist, send via REST multipart/form-data (backend saves and Socket.IO will broadcast)
     if (attachments.length > 0) {
+      // Guard: ensure none of the attachments exceed size limit
+      const hasOversized = attachments.some(a => (a.file && a.file.size > MAX_ATTACHMENT_SIZE) || (a.size && a.size > MAX_ATTACHMENT_SIZE))
+      if (hasOversized) {
+        setError('File is larger than 10MB')
+        setLoading(false)
+        return
+      }
       try {
         const form = new FormData()
         form.append('receiver', String(receiverId))
@@ -835,6 +867,12 @@ export default function Chat({ onLogout }) {
 
             <form onSubmit={handleSendMessage} className="px-6 py-4  border-t border-gray-200 bg-gradient-to-b from-gray-50 to-gray-100  shadow-lg">
               <div className="space-y-2">
+                {error && (
+                  <div className="flex items-center justify-between bg-red-50 border border-red-200 text-red-800 px-4 py-2 rounded-md">
+                    <div className="text-sm">{error}</div>
+                    <button type="button" onClick={() => setError('')} className="text-red-600 font-bold px-2">×</button>
+                  </div>
+                )}
                 {attachments.length > 0 && (
                   <div className="flex items-center space-x-2 mb-2 overflow-x-auto">
                     {attachments.map((a, i) => (
