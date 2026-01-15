@@ -3,6 +3,7 @@ import io from 'socket.io-client'
 import { Button, Drawer } from 'antd'
 import Addfrnds from '../components/Addfrnds'
 import Requests from '../components/Requests'
+import VoiceCall from '../components/VoiceCall'
 import { API_URL, SOCKET_URL } from '../config'
 
 export default function Chat({ onLogout }) {
@@ -30,6 +31,8 @@ export default function Chat({ onLogout }) {
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0)
   const [callState, setCallState] = useState('idle') // 'idle' | 'calling' | 'incoming' | 'in-call'
   const [callPartner, setCallPartner] = useState(null)
+  const callStateRef = useRef(callState)
+  useEffect(() => { callStateRef.current = callState }, [callState])
   const [micMissing, setMicMissing] = useState(false)
   const pcRef = useRef(null)
   const localStreamRef = useRef(null)
@@ -39,28 +42,7 @@ export default function Chat({ onLogout }) {
   // Buffer ICE candidates that arrive before remoteDescription is set
   const pendingIceRef = useRef({})
 
-  // Flush any buffered ICE candidates for a particular key (callId or from)
-  const flushPendingIce = async (key) => {
-    try {
-      if (!key) key = 'global'
-      const list = pendingIceRef.current[key] || []
-      if (!list || list.length === 0) return
-      console.log('🔁 Flushing', list.length, 'pending ICE candidates for', key)
-      if (!pcRef.current) {
-        console.warn('No RTCPeerConnection to flush ICE into')
-        return
-      }
-      for (const c of list) {
-        try {
-          await pcRef.current.addIceCandidate(new RTCIceCandidate(c))
-          console.log('✅ Flushed ICE candidate for', key)
-        } catch (e) {
-          console.warn('Failed to add pending ICE candidate', e)
-        }
-      }
-      pendingIceRef.current[key] = []
-    } catch (e) { console.warn('flushPendingIce failed', e) }
-  }
+  // (Call signalling removed)
 
   // parsed token fallback (quick id/name extraction without server call)
   const parseJwt = t => {
@@ -72,6 +54,8 @@ export default function Chat({ onLogout }) {
       return decoded
     } catch (e) { return null }
   }
+
+  // (SDP normalization removed)
 
   // refs for latest values inside socket handlers (avoid re-registering)
   const selectedFriendRef = useRef(selectedFriend)
@@ -478,75 +462,7 @@ export default function Chat({ onLogout }) {
       } catch (e) { console.warn('friendAcceptedHandler error', e) }
     }
 
-    /* ----------------------- VOICE CALL SIGNALING ----------------------- */
-    const handleCallOffer = async payload => {
-      console.log('📞 Received call offer (raw):', payload)
-      if (!payload) return
-      // Accept multiple payload shapes: { from, offer }, { caller, sdp }, or raw SDP
-      const from = payload.from || payload.caller || payload.fromUser || payload.fromId || payload.userId
-      const callId = payload.callId || payload.id || payload._id || payload.call_id
-      const offer = payload.offer || payload.sdp || payload.sessionDescription || payload
-      if (callId) callIdRef.current = callId
-      if (!from) { console.warn('call offer missing `from` field, ignoring'); return }
-      incomingOfferRef.current = { from: String(from), callId, offer }
-      setCallPartner({ _id: String(from), name: payload.name || payload.callerName || payload.username || '' })
-      setCallState('incoming')
-    }
-
-    const handleCallAnswer = async payload => {
-      console.log('📞 Received call answer (raw):', payload)
-      try {
-        if (!pcRef.current) { console.warn('No RTCPeerConnection present to set answer'); return }
-        const ans = payload.answer || payload.sdp || payload
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(ans))
-        console.log('✅ Remote description (answer) set')
-        // Flush any ICE candidates buffered for this call/from
-        try {
-          const fromKey = payload.from || payload.caller || payload.fromUser || payload.fromId || payload.userId
-          const cid = payload.callId || payload.id || payload._id || payload.call_id
-          const key = cid || fromKey || 'global'
-          await flushPendingIce(key)
-        } catch (e) { console.warn('flushPendingIce after answer failed', e) }
-        setCallState('in-call')
-      } catch (e) { console.warn('handleCallAnswer failed', e) }
-    }
-
-    const handleCallICE = async payload => {
-      try {
-        console.log('📥 Received ICE candidate (raw):', payload)
-        const cand = payload && (payload.candidate || payload.candidate?.candidate) ? (payload.candidate || payload) : payload
-        if (!cand) return
-        const fromKey = payload.from || payload.caller || payload.fromUser || payload.fromId || payload.userId
-        const cid = payload.callId || payload.id || payload._id || payload.call_id
-        const key = cid || fromKey || 'global'
-        // If pc not ready or remoteDescription not set yet, buffer the candidate
-        if (!pcRef.current || !pcRef.current.remoteDescription || !pcRef.current.remoteDescription.type) {
-          pendingIceRef.current[key] = pendingIceRef.current[key] || []
-          pendingIceRef.current[key].push(cand)
-          console.log('📥 Buffered ICE candidate for', key)
-          return
-        }
-        await pcRef.current.addIceCandidate(new RTCIceCandidate(cand))
-        console.log('✅ ICE candidate added')
-      } catch (e) { console.warn('addIce failed', e) }
-    }
-
-    const handleCallHangup = payload => {
-      console.log('📞 Call hangup received', payload)
-      // cleanup
-      if (pcRef.current) {
-        try { pcRef.current.close() } catch (e) { }
-        pcRef.current = null
-      }
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(t => t.stop())
-        localStreamRef.current = null
-      }
-      setCallState('idle')
-      setCallPartner(null)
-      incomingOfferRef.current = null
-      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null
-    }
+    /* Call signalling removed */
 
     socket.on('newMessage', handler)
     socket.on('friendOnlineStatus', onlineStatusHandler)
@@ -570,23 +486,7 @@ export default function Chat({ onLogout }) {
     socket.on('request:accepted', friendAcceptedHandler)
     socket.on('friend_accept', friendAcceptedHandler)
     // Call signalling (listen to multiple event-name variants for compatibility)
-    socket.on('call:offer', handleCallOffer)
-    socket.on('call-offer', handleCallOffer)
-    socket.on('offer', handleCallOffer)
-    socket.on('webrtc-offer', handleCallOffer)
-
-    socket.on('call:answer', handleCallAnswer)
-    socket.on('call-answer', handleCallAnswer)
-    socket.on('answer', handleCallAnswer)
-    socket.on('webrtc-answer', handleCallAnswer)
-
-    socket.on('call:ice-candidate', handleCallICE)
-    socket.on('call-ice-candidate', handleCallICE)
-    socket.on('ice-candidate', handleCallICE)
-
-    socket.on('call:hangup', handleCallHangup)
-    socket.on('call-hangup', handleCallHangup)
-    socket.on('hangup', handleCallHangup)
+    // Call events removed
     return () => {
       socket.off('newMessage', handler)
       socket.off('friendOnlineStatus', onlineStatusHandler)
@@ -607,300 +507,11 @@ export default function Chat({ onLogout }) {
       socket.off('friend:added', friendAcceptedHandler)
       socket.off('request:accepted', friendAcceptedHandler)
       socket.off('friend_accept', friendAcceptedHandler)
-      socket.off('call:offer', handleCallOffer)
-      socket.off('call-offer', handleCallOffer)
-      socket.off('offer', handleCallOffer)
-      socket.off('webrtc-offer', handleCallOffer)
-
-      socket.off('call:answer', handleCallAnswer)
-      socket.off('call-answer', handleCallAnswer)
-      socket.off('answer', handleCallAnswer)
-      socket.off('webrtc-answer', handleCallAnswer)
-
-      socket.off('call:ice-candidate', handleCallICE)
-      socket.off('call-ice-candidate', handleCallICE)
-      socket.off('ice-candidate', handleCallICE)
-
-      socket.off('call:hangup', handleCallHangup)
-      socket.off('call-hangup', handleCallHangup)
-      socket.off('hangup', handleCallHangup)
+      // Call event listeners removed
     }
   }, [socket])
 
-  /* ----------------------- VOICE CALL HELPERS ------------------------- */
-  const createPeerConnection = (partnerId) => {
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
-    pc.onicecandidate = e => {
-      if (e.candidate) {
-        console.log('📤 Emitting local ICE candidate', e.candidate)
-        if (socket?.connected) {
-          try { socket.emit('call:ice-candidate', { to: String(partnerId), candidate: e.candidate, from: String(currentUserIdRef.current || currentUserId) }) } catch (err) { console.warn('emit ICE failed', err) }
-          try { socket.emit('ice-candidate', { to: String(partnerId), candidate: e.candidate, from: String(currentUserIdRef.current || currentUserId) }) } catch (err) { }
-        }
-      }
-    }
-    pc.oniceconnectionstatechange = () => {
-      console.log('🛰️ ICE connection state:', pc.iceConnectionState)
-    }
-    pc.onconnectionstatechange = () => {
-      console.log('🔗 Peer connection state:', pc.connectionState)
-    }
-    pc.ontrack = e => {
-      try {
-        if (remoteAudioRef.current) {
-          // Prefer the provided streams array, fall back to creating a MediaStream
-          try {
-            remoteAudioRef.current.srcObject = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track])
-          } catch (err) {
-            try { remoteAudioRef.current.srcObject = new MediaStream([e.track]) } catch (e2) { console.warn('failed to assign remote stream', e2) }
-          }
-          // Try to start playback (may require user gesture in some browsers)
-          try { remoteAudioRef.current.play().catch(() => { }) } catch (e) { }
-        }
-      } catch (e) { console.warn('ontrack error', e) }
-    }
-    return pc
-  }
-
-  // Check whether an audio input device exists before requesting getUserMedia
-  const ensureMicrophoneAvailable = async () => {
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return false
-      const devices = await navigator.mediaDevices.enumerateDevices()
-      const hasAudio = devices.some(d => d && d.kind === 'audioinput')
-      return hasAudio
-    } catch (e) {
-      console.warn('enumerateDevices failed', e)
-      return false
-    }
-  }
-
-  const recheckMic = async () => {
-    try {
-      const ok = await ensureMicrophoneAvailable()
-      setMicMissing(!ok)
-      if (ok) setError('')
-      else setError('No microphone found. Please connect a microphone and try again.')
-      return ok
-    } catch (e) {
-      console.warn('recheckMic failed', e)
-      setMicMissing(true)
-      return false
-    }
-  }
-
-  const startCall = async () => {
-    if (!selectedFriend || !socket?.connected) { setError('Cannot start call now'); return }
-    setCallPartner(selectedFriend)
-    setCallState('calling')
-    try {
-      // Create call record on server first
-      try {
-        const payloadBody = {
-          receiver: String(selectedFriend._id),
-          // include common aliases so different backends accept the payload
-          target: String(selectedFriend._id),
-          to: String(selectedFriend._id),
-        }
-        const res = await fetch(`${API_URL}/api/calls/start`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payloadBody)
-        })
-        if (res.ok) {
-          const data = await res.json().catch(() => null)
-          const cid = data?.callId || data?._id || data?.id
-          if (cid) callIdRef.current = cid
-        } else {
-          // Surface server-provided error (if any) and abort call start
-          let bodyText = null
-          try { bodyText = await res.text() } catch (e) { /* ignore */ }
-          console.warn('create call record failed', res.status, bodyText)
-          setError((bodyText && bodyText.length > 0) ? bodyText : `Failed to create call record (${res.status})`)
-          setCallState('idle')
-          return
-        }
-      } catch (e) { console.warn('calls/start request failed', e); setError('Failed to create call record'); setCallState('idle'); return }
-
-      // Preflight: check for audio input devices before requesting permission
-      try {
-        const ok = await ensureMicrophoneAvailable()
-        if (!ok) {
-          setError('No microphone found. Please connect a microphone and try again.')
-          setMicMissing(true)
-          setCallState('idle')
-          return
-        }
-      } catch (e) {
-        console.warn('microphone preflight failed', e)
-      }
-
-      // Acquire microphone; handle device-not-found or permission errors gracefully
-      let s
-      try {
-        s = await navigator.mediaDevices.getUserMedia({ audio: true })
-      } catch (err) {
-        console.warn('getUserMedia failed', err)
-        if (err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
-          setError('Microphone not found or no audio device available')
-        } else if (err && err.name === 'NotAllowedError') {
-          setError('Microphone permission denied')
-        } else {
-          setError('Unable to access microphone')
-        }
-        setCallState('idle')
-        return
-      }
-
-      localStreamRef.current = s
-      pcRef.current = createPeerConnection(selectedFriend._id)
-      // add local tracks
-      s.getAudioTracks().forEach(t => pcRef.current.addTrack(t, s))
-      const offer = await pcRef.current.createOffer()
-      await pcRef.current.setLocalDescription(offer)
-      // normalize SDP object for transport
-      const localDesc = pcRef.current.localDescription ? { type: pcRef.current.localDescription.type, sdp: pcRef.current.localDescription.sdp } : { type: offer.type, sdp: offer.sdp }
-      const payload = {
-        to: String(selectedFriend._id),
-        receiver: String(selectedFriend._id),
-        target: String(selectedFriend._id),
-        offer: localDesc,
-        name: currentUserName,
-        callId: callIdRef.current,
-        from: String(currentUserIdRef.current || currentUserId)
-      }
-      console.log('📤 Emitting call offer payload (all variants):', payload)
-      // emit multiple event names for compatibility with different server implementations
-      let ackReceived = false
-      try {
-        socket.emit('call:offer', payload, (ack) => { console.log('ack: call:offer', ack); ackReceived = true })
-        console.log('emit: call:offer')
-      } catch (e) { console.warn('emit call:offer failed', e) }
-      try {
-        socket.emit('call-offer', payload, (ack) => { console.log('ack: call-offer', ack); ackReceived = true })
-        console.log('emit: call-offer')
-      } catch (e) { console.warn('emit call-offer failed', e) }
-      try {
-        socket.emit('offer', payload, (ack) => { console.log('ack: offer', ack); ackReceived = true })
-        console.log('emit: offer')
-      } catch (e) { console.warn('emit offer failed', e) }
-      try {
-        socket.emit('webrtc-offer', payload, (ack) => { console.log('ack: webrtc-offer', ack); ackReceived = true })
-        console.log('emit: webrtc-offer')
-      } catch (e) { console.warn('emit webrtc-offer failed', e) }
-
-      // If server doesn't ack within 5s, warn and surface an error so user can retry
-      setTimeout(() => {
-        if (!ackReceived) {
-          console.warn('No server ACK for call offer — server may not have forwarded the offer')
-          setError('Call offer not delivered. Retry or check server forwarding.')
-          setCallState('idle')
-        }
-      }, 5000)
-    } catch (e) {
-      console.error('startCall failed', e)
-      setError('Failed to start call')
-      setCallState('idle')
-    }
-  }
-
-  const acceptCall = async () => {
-    const payload = incomingOfferRef.current
-    if (!payload || !socket?.connected) { setCallState('idle'); return }
-    const from = payload.from || payload.caller || payload.fromUser
-    try {
-      // Preflight check for microphone
-      try {
-        const ok = await ensureMicrophoneAvailable()
-        if (!ok) {
-          setError('No microphone found. Please connect a microphone and try again.')
-          setMicMissing(true)
-          setCallState('idle')
-          return
-        }
-      } catch (e) { console.warn('microphone preflight failed', e) }
-
-      let s
-      try {
-        s = await navigator.mediaDevices.getUserMedia({ audio: true })
-      } catch (err) {
-        console.warn('getUserMedia failed', err)
-        if (err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
-          setError('Microphone not found or no audio device available')
-        } else if (err && err.name === 'NotAllowedError') {
-          setError('Microphone permission denied')
-        } else {
-          setError('Unable to access microphone')
-        }
-        setCallState('idle')
-        return
-      }
-
-      localStreamRef.current = s
-      pcRef.current = createPeerConnection(from)
-      s.getAudioTracks().forEach(t => pcRef.current.addTrack(t, s))
-      const offer = payload.offer || payload
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer))
-      // Flush any ICE candidates that were buffered for this call/from
-      try {
-        const fromKey = payload.from || payload.caller || payload.fromUser
-        const cid = payload.callId || callIdRef.current
-        const key = cid || fromKey || 'global'
-        await flushPendingIce(key)
-      } catch (e) { console.warn('flushPendingIce in acceptCall failed', e) }
-      const answer = await pcRef.current.createAnswer()
-      await pcRef.current.setLocalDescription(answer)
-      const localAns = pcRef.current.localDescription ? { type: pcRef.current.localDescription.type, sdp: pcRef.current.localDescription.sdp } : { type: answer.type, sdp: answer.sdp }
-      const ansPayload = { to: String(from), answer: localAns, callId: payload.callId || callIdRef.current, from: String(currentUserIdRef.current || currentUserId) }
-      console.log('📤 Emitting call answer payload:', ansPayload)
-      try { socket.emit('call:answer', ansPayload) } catch (e) { console.warn('emit call:answer failed', e) }
-      try { socket.emit('call-answer', ansPayload) } catch (e) { /* ignore */ }
-      // Inform REST API that call is accepted
-      try {
-        const cid = payload.callId || callIdRef.current
-        if (cid) {
-          await fetch(`${API_URL}/api/calls/${cid}/accept`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } })
-          callIdRef.current = cid
-        }
-      } catch (e) { console.warn('calls/accept request failed', e) }
-      setCallState('in-call')
-      setCallPartner({ _id: from, name: payload.name || payload.callerName || '' })
-      incomingOfferRef.current = null
-    } catch (e) {
-      console.error('acceptCall failed', e)
-      setError('Failed to accept call')
-      setCallState('idle')
-    }
-  }
-
-  const rejectCall = async () => {
-    const payload = incomingOfferRef.current
-    const from = payload && (payload.from || payload.caller)
-    try { if (from && socket?.connected) socket.emit('call:hangup', { to: String(from) }) } catch (e) { }
-    incomingOfferRef.current = null
-    setCallPartner(null)
-    setCallState('idle')
-  }
-
-  const hangupCall = async () => {
-    try {
-      if (pcRef.current) { pcRef.current.close(); pcRef.current = null }
-      if (localStreamRef.current) { localStreamRef.current.getTracks().forEach(t => t.stop()); localStreamRef.current = null }
-      if (socket?.connected && callPartner && callPartner._id) {
-        socket.emit('call:hangup', { to: String(callPartner._id), callId: callIdRef.current })
-      }
-      // Notify REST API to end call
-      try {
-        const cid = callIdRef.current
-        if (cid) {
-          await fetch(`${API_URL}/api/calls/${cid}/end`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } })
-        }
-      } catch (e) { console.warn('calls/end request failed', e) }
-    } catch (e) { console.warn('hangup failed', e) }
-    setCallState('idle')
-    setCallPartner(null)
-    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null
-  }
+  /* Call features removed */
 
   // Message search: update results when query or messages change
   useEffect(() => {
@@ -1321,12 +932,11 @@ export default function Chat({ onLogout }) {
                 {micMissing && (
                   <div className="absolute left-0 top-full mt-2 w-96 bg-yellow-50 border border-yellow-200 p-3 rounded text-sm z-50">
                     <div className="font-medium text-yellow-800 mb-1">No microphone detected</div>
-                    <div className="text-xs text-gray-700 mb-2">Connect a microphone or install a virtual audio device (VB-Cable / VoiceMeeter), then click Re-check.</div>
+                    <div className="text-xs text-gray-700 mb-2">Connect a microphone or install a virtual audio device (VB-Cable / VoiceMeeter).</div>
                     <div className="flex items-center space-x-2">
                       <button type="button" onClick={() => window.open('https://www.vb-audio.com/Cable/', '_blank')} className="px-3 py-1 bg-blue-600 text-white rounded">VB-Cable</button>
                       <button type="button" onClick={() => window.open('https://vb-audio.com/Voicemeeter/', '_blank')} className="px-3 py-1 bg-blue-600 text-white rounded">VoiceMeeter</button>
                       <button type="button" onClick={() => { try { window.open('ms-settings:privacy-microphone') } catch (e) { } }} className="px-3 py-1 bg-gray-200 rounded">Open mic settings</button>
-                      <button type="button" onClick={recheckMic} className="px-3 py-1 bg-green-500 text-white rounded">Re-check</button>
                     </div>
                   </div>
                 )}
@@ -1438,7 +1048,7 @@ export default function Chat({ onLogout }) {
                   <p className="text-xs text-gray-500">{selectedFriend.email}</p>
                 </div>
               </div>
-              <div className="ml-4 relative">
+              <div className="ml-4 relative flex items-center space-x-3">
                 <input
                   type="text"
                   value={messageSearchQuery}
@@ -1446,20 +1056,6 @@ export default function Chat({ onLogout }) {
                   placeholder="Search messages..."
                   className="px-3 py-1 rounded-md border border-gray-300 text-sm w-64"
                 />
-                <div className="absolute left-0 -bottom-10 flex items-center space-x-2">
-                  {selectedFriend && callState === 'idle' && (
-                    <button onClick={startCall} className="px-3 py-1 bg-green-500 text-white rounded-md text-sm">Call</button>
-                  )}
-                  {selectedFriend && callState === 'calling' && (
-                    <button disabled className="px-3 py-1 bg-yellow-400 text-white rounded-md text-sm">Calling...</button>
-                  )}
-                  {callState === 'in-call' && (
-                    <button onClick={hangupCall} className="px-3 py-1 bg-red-500 text-white rounded-md text-sm">Hang Up</button>
-                  )}
-                  {callState === 'incoming' && (
-                    <button onClick={acceptCall} className="px-3 py-1 bg-blue-500 text-white rounded-md text-sm">Attend</button>
-                  )}
-                </div>
                 {messageSearchResults.length > 0 && (
                   <div className="absolute right-0 mt-2 w-72 bg-white border rounded shadow z-50 max-h-60 overflow-y-auto divide-y divide-gray-100">
                     {messageSearchResults.map(r => (
@@ -1470,21 +1066,13 @@ export default function Chat({ onLogout }) {
                     ))}
                   </div>
                 )}
+                {/* Voice call button placed to the right of the search input */}
+                <div className="ml-2">
+                  <VoiceCall socket={socket} selectedFriend={selectedFriend} currentUserId={currentUserId} currentUserName={currentUserName} />
+                </div>
               </div>
             </div>
-            {/* Incoming call banner */}
-            {callState === 'incoming' && (
-              <div className="bg-yellow-50 border-t border-b border-yellow-200 text-yellow-800 px-4 py-3 flex items-center justify-between">
-                <div>
-                  <strong>Incoming call</strong>
-                  <div className="text-sm">{callPartner?.name || 'Unknown caller'}</div>
-                </div>
-                <div className="space-x-2">
-                  <button onClick={acceptCall} className="px-3 py-1 bg-green-500 text-white rounded-md text-sm">Accept</button>
-                  <button onClick={rejectCall} className="px-3 py-1 bg-red-500 text-white rounded-md text-sm">Reject</button>
-                </div>
-              </div>
-            )}
+            {/* Incoming call UI removed */}
 
             {/* Remote audio element (hidden) */}
             <audio ref={remoteAudioRef} autoPlay style={{ display: 'none' }} />
